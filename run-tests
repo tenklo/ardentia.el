@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Compile ardentia strictly, then run the ERT suite.  Exit code = result.
+# Everything is compiled in a temporary copy: this directory may be shared
+# (a file sync, several Emacs versions), and a stale .elc next to a newer
+# .el would win on load (load-prefer-newer is nil), so no .elc is ever
+# left here.
+set -euo pipefail
+src="$(dirname "$(readlink -f "$0")")"
+export HOME=/tmp/ardentia-home
+mkdir -p "$HOME"
+work="$(mktemp -d /tmp/ardentia-test.XXXXXX)"
+trap 'rm -rf "$work"' EXIT
+cp "$src"/ardentia*.el "$work"/
+cd "$work"
+emacs --batch -Q -L . --eval '(setq byte-compile-error-on-warn t)' \
+  -f batch-byte-compile ardentia*.el </dev/null
+emacs --batch -Q -L . -l ardentia-test.el -f ert-run-tests-batch-and-exit </dev/null
