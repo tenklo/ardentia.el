@@ -1685,7 +1685,7 @@ otherwise.  It logs the arguments, and the stdin text of a send."
                    "* TODO [#C] First :aiready:\n* TODO [#A] Second :aiready:\nbody\n"))
     (should-not (buffer-modified-p (find-buffer-visiting f)))
     ;; The "null" string of the JSON counts as no ID, too.
-    (ardentia-set-priority-1 f nil 'remove 2 "Second")
+    (ardentia-set-priority-1 f "null" 'remove 2 "Second")
     (should (string-match-p "^\\* TODO Second :aiready:$"
                             (ardentia-test--file-text f)))))
 
