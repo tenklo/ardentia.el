@@ -87,10 +87,12 @@ session in the optional agent-shell package."
   :type 'integer
   :group 'ardentia)
 
-(defcustom ardentia-session-idle-seconds 300
+(defcustom ardentia-session-idle-seconds 900
   "Seconds without a write after which a transcript counts as finished.
-A transcript is also finished when the last refresh of the dashboard
-state does not list its task as running."
+The newest write of the main transcript and of its subagent transcripts
+counts, so a long subagent run keeps the session live.  A transcript is
+also finished when the last refresh of the dashboard state does not list
+its task as running."
   :type 'integer
   :group 'ardentia)
 
@@ -440,11 +442,17 @@ TASK does."
 
 (defun ardentia-session--finished-p ()
   "Return non-nil when the session of the current buffer is finished.
-That is: the last refresh does not list the task as running, or the
-transcript was not written for `ardentia-session-idle-seconds'."
+That is: the last refresh does not list the task as running, or neither
+the transcript nor one of its subagent transcripts was written for
+`ardentia-session-idle-seconds'.  While a subagent works only its own
+file grows, so the main file alone would read as idle."
   (or (not (ardentia-session--task-running-p ardentia-session--task))
       (> (- (float-time)
-            (ardentia-session--mtime ardentia-session--file))
+            (apply #'max
+                   (mapcar #'ardentia-session--mtime
+                           (cons ardentia-session--file
+                                 (ardentia-session--subagent-files
+                                  ardentia-session--file)))))
          ardentia-session-idle-seconds)))
 
 (defun ardentia-session--discover ()

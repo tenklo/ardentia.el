@@ -1110,6 +1110,15 @@ Text
         (let ((buf (ardentia-session-open running)))
           (should (buffer-local-value 'ardentia-session--finished buf))
           (should-not (buffer-local-value 'ardentia-session--follow buf))))
+      ;; A subagent that still writes keeps an idle main file live.
+      (let ((sub (expand-file-name (concat ardentia-test--sid-1 "/subagents/agent-a1.jsonl") dir))
+            (ardentia--state (list :time (current-time) :tasks (list running))))
+        (make-directory (file-name-directory sub) t)
+        (ardentia-test--write sub "")
+        (let ((buf (ardentia-session-open running)))
+          (should-not (buffer-local-value 'ardentia-session--finished buf))
+          (kill-buffer buf))
+        (delete-directory (expand-file-name ardentia-test--sid-1 dir) t))
       ;; A review task shows the transcript, finished, without a timer.
       (ardentia-session--cancel-timer)
       (ardentia-test--write f "" t (current-time))

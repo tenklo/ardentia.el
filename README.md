@@ -130,8 +130,9 @@ seconds: only new bytes are read, a partial last line waits for the next
 poll, and point stays at the end if it was there. The header line says
 `following`, `not following` or `finished`. A session is finished when
 the last refresh of the dashboard does not list the task as running, or
-when the transcript was not written for `ardentia-session-idle-seconds`;
-a finished buffer is no longer polled. The timer exists only while a
+when neither the transcript nor one of its subagent transcripts was
+written for `ardentia-session-idle-seconds` (default 900); a finished
+buffer is no longer polled, `g` reads it again. The timer exists only while a
 buffer needs it.
 
 Keys: `g` re-read from scratch, `f` toggle following, `o` visit the
