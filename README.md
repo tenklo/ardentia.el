@@ -45,6 +45,16 @@ tag `NAME_only`.
 - `systemctl --user show` on `ardentia-service-unit` and
   `ardentia-timer-unit`: last and next run of the runner, shown in the
   dashboard. Set them to the units of your runner.
+- `ardentia-run-task-command`: starts the runner on one task right now
+  (`x`). In every element `%i` is the task's org ID and `%f` its file.
+  The default uses `systemd-run --user` (a transient unit, independent
+  of Emacs, output in the journal) and the runner's
+  `ORG_AIREADY_ONLY_ID`: the runner waits for a running tick, then
+  works exactly that task, also when it is scheduled for later. Any
+  command that does the same will do; nil switches the feature off.
+  Running asks for confirmation, refuses tasks bound to another host,
+  and in an org buffer saves the file first, because the runner reads
+  it from disk.
 
 Properties ardentia shows when present: `AI_STATUS` (completed, blocked,
 partial), `AI_SESSION`, `AI_CLAIMED`, `AI_CLAIMED_BY`,
@@ -69,7 +79,7 @@ while `ardentia-mode-line-mode` is on.
 
 | Command                  | What it does                                         |
 |--------------------------|------------------------------------------------------|
-| `ardentia`               | Transient menu (d r n D g m)                         |
+| `ardentia`               | Transient menu (d r n D g m, x in org buffers)       |
 | `ardentia-dashboard`     | All queues in `*ardentia*`: review, running, ready, later |
 | `ardentia-review-inbox`  | Same view, only tasks waiting for review             |
 | `ardentia-review-task`   | Read-only org view of one task (run report, notes, child sections) |
@@ -78,6 +88,8 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-new-task`      | Capture a new `:aiready:` task (asks for the host)   |
 | `ardentia-delegate`      | Same, quoting the active region as data              |
 | `ardentia-mode-line-mode`| Global minor mode with the review counter            |
+| `ardentia-run-task-at-point` | Org buffer: start the runner now on the `:aiready:` task at point |
+| `ardentia-dashboard-run` | Dashboard: start the runner now on the ready or later task at point |
 
 ### Keys in the dashboard
 
@@ -85,7 +97,8 @@ while `ardentia-mode-line-mode` is on.
 session transcript for a running task, an error for other queues),
 `t` session transcript of the task in any queue (the latest run),
 `A` the latest session in `agent-shell`, `o` visit the heading,
-`a` accept, `s` send back, `l` hide or show later tasks, `q` quit, `?` menu.
+`a` accept, `s` send back, `l` hide or show later tasks, `x` run the ready
+or later task now, `q` quit, `?` menu.
 
 Queue `later`: the runner only picks up an `:aiready:` task once its
 SCHEDULED time is due, so a ready task scheduled in the future is listed
@@ -156,6 +169,7 @@ viewer RET uses on a running task.
 `ardentia-mode-line-interval`, `ardentia-process-timeout`,
 `ardentia-stale-minutes`, `ardentia-dashboard-show-later`,
 `ardentia-timer-unit`, `ardentia-service-unit`,
+`ardentia-run-task-command`,
 `ardentia-session-directory`, `ardentia-session-viewer`,
 `ardentia-session-agent-shell-verbosity`,
 `ardentia-session-follow-interval`, `ardentia-session-result-lines`,
@@ -189,6 +203,7 @@ viewer RET uses on a running task.
 - `ardentia-session.el` session transcript viewer, optional agent-shell
 - `ardentia-dashboard.el` dashboard and review inbox
 - `ardentia-capture.el` new task and delegate
+- `ardentia-run.el` start the runner on one task now
 - `ardentia-modeline.el` mode-line counter
 - `ardentia.el` entry point and transient menu
 - `ardentia-test.el`, `run-tests` tests

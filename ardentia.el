@@ -43,6 +43,7 @@
 (require 'ardentia-session)
 (require 'ardentia-dashboard)
 (require 'ardentia-capture)
+(require 'ardentia-run)
 (require 'ardentia-modeline)
 
 (defun ardentia-refresh-dashboards ()
@@ -60,7 +61,10 @@
     ("m" "Toggle mode-line counter" ardentia-mode-line-mode)]
    ["Create"
     ("n" "New task" ardentia-new-task)
-    ("D" "Delegate region/buffer" ardentia-delegate)]])
+    ("D" "Delegate region/buffer" ardentia-delegate)]
+   ["Run"
+    :if-derived org-mode
+    ("x" "Run aiready task at point now" ardentia-run-task-at-point)]])
 
 (provide 'ardentia)
 ;;; ardentia.el ends here

@@ -747,6 +747,148 @@ Text
       (ardentia--mode-line-tick)
       (should-not ardentia--mode-line-busy))))
 
+;;;; Run a task now
+
+(defun ardentia-test--run-and-wait (command task)
+  "Run the ready TASK with COMMAND; return the messages as a string."
+  (let ((ardentia-run-task-command command) msgs proc)
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args)
+                 (when fmt (push (apply #'format fmt args) msgs)))))
+      (setq proc (ardentia-run-task task))
+      (ardentia-test--wait (lambda () (and (not (process-live-p proc)) msgs))))
+    (mapconcat #'identity (reverse msgs) "\n")))
+
+(defconst ardentia-test--ready-task
+  (list :queue 'ready :title "Do it" :file "/o/a.org" :id "id-r" :tags '("aiready")))
+
+(ert-deftest ardentia-test-run-substitute ()
+  (should (equal (ardentia-run--substitute
+                  '("p" "--e=%i" "%f" "a%ib%fc" "x") "ID1" "/d/f.org")
+                 '("p" "--e=ID1" "/d/f.org" "aID1b/d/f.orgc" "x"))))
+
+(ert-deftest ardentia-test-run-default-command ()
+  (should (member "--setenv=ORG_AIREADY_ONLY_ID=%i" ardentia-run-task-command))
+  (should (equal (car (last ardentia-run-task-command)) "%f")))
+
+(ert-deftest ardentia-test-run-refusals ()
+  (cl-letf (((symbol-function 'y-or-n-p)
+             (lambda (&rest _) (ert-fail "must not ask"))))
+    (let ((ardentia-run-task-command '("true")) (ardentia--local-host "here"))
+      (should-error (ardentia-run-task
+                     (plist-put (copy-sequence ardentia-test--ready-task)
+                                :queue 'review))
+                    :type 'user-error)
+      (let ((err (should-error
+                  (ardentia-run-task
+                   (plist-put (copy-sequence ardentia-test--ready-task)
+                              :tags '("aiready" "other_only")))
+                  :type 'user-error)))
+        (should (equal (cadr err) "Task belongs to host other")))
+      (should-error (ardentia-run-task
+                     (plist-put (copy-sequence ardentia-test--ready-task)
+                                :id "null"))
+                    :type 'user-error))
+    (let ((ardentia-run-task-command nil))
+      (should-error (ardentia-run-task ardentia-test--ready-task)
+                    :type 'user-error))))
+
+(ert-deftest ardentia-test-run-unknown-local-host-does-not-block ()
+  (let ((ardentia--local-host nil) (ardentia--state nil))
+    (should-not (ardentia-run--check-host '("aiready" "other_only")))))
+
+(ert-deftest ardentia-test-run-own-host-and-later-pass ()
+  (let ((ardentia--local-host "here"))
+    (should-not (ardentia-run--check-host '("aiready" "here_only")))
+    (should (string-match-p
+             "runner started for \"Do it\""
+             (ardentia-test--run-and-wait
+              '("true")
+              (plist-put (copy-sequence ardentia-test--ready-task)
+                         :tags '("aiready" "here_only")))))))
+
+(ert-deftest ardentia-test-run-success-and-failure ()
+  (let ((ardentia--local-host nil))
+    (should (string-match-p "runner started for \"Do it\""
+                            (ardentia-test--run-and-wait
+                             '("true") ardentia-test--ready-task)))
+    (let ((msg (ardentia-test--run-and-wait
+                '("false") ardentia-test--ready-task)))
+      (should (string-match-p "failed (exit 1)" msg))
+      (should (string-match-p (regexp-quote ardentia-run--buffer-name) msg)))))
+
+(ert-deftest ardentia-test-run-passes-id-and-file ()
+  (let* ((out (make-temp-file "ardentia-run-out"))
+         (ardentia--local-host nil))
+    (unwind-protect
+        (progn
+          (ardentia-test--run-and-wait
+           (list "sh" "-c" "echo \"$0|$1\" > \"$2\"" "%i" "%f" out)
+           ardentia-test--ready-task)
+          (should (equal (string-trim
+                          (with-temp-buffer (insert-file-contents out)
+                                            (buffer-string)))
+                         "id-r|/o/a.org")))
+      (delete-file out))))
+
+(ert-deftest ardentia-test-run-declined ()
+  (let ((ardentia-run-task-command '("true")) (ardentia--local-host nil))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
+      (should-not (ardentia-run-task ardentia-test--ready-task)))))
+
+(ert-deftest ardentia-test-run-dashboard-key ()
+  (should (eq (lookup-key ardentia-dashboard-mode-map "x")
+              #'ardentia-dashboard-run)))
+
+(ert-deftest ardentia-test-run-at-point-refusals ()
+  (let ((ardentia-run-task-command '("true")))
+    (cl-letf (((symbol-function 'y-or-n-p)
+               (lambda (&rest _) (ert-fail "must not ask"))))
+      (dolist (text '("* TODO Plain\n"
+                      "* DONE Closed :aiready:\n"
+                      "* TODO Other :aiready:other_only:\n"))
+        (ardentia-test--with-org-file f text
+          (with-current-buffer (find-file-noselect f)
+            (let ((ardentia--local-host "here"))
+              (should-error (ardentia-run-task-at-point) :type 'user-error))))))))
+
+(ert-deftest ardentia-test-run-at-point-creates-id-and-saves ()
+  (ardentia-test--with-org-file f "* TODO Go :aiready:\nbody\n"
+    (let ((ardentia-run-task-command
+           (list "sh" "-c" "test -f \"$0\"" "%f"))
+          (ardentia--local-host nil) msgs proc)
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                ((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (when fmt (push (apply #'format fmt args) msgs))))
+                ((symbol-function 'make-process)
+                 (let ((orig (symbol-function 'make-process)))
+                   (lambda (&rest args)
+                     (setq proc (apply orig args))))))
+        (with-current-buffer (find-file-noselect f)
+          (goto-char (point-max))
+          (ardentia-run-task-at-point)
+          (should-not (buffer-modified-p)))
+        (ardentia-test--wait (lambda () (and proc (not (process-live-p proc)) msgs))))
+      (should (string-match-p "^:ID: +[-0-9a-f]+$"
+                              (ardentia-test--file-text f)))
+      (should (string-match-p "runner started" (car msgs))))))
+
+(ert-deftest ardentia-test-run-at-point-asks-before-saving ()
+  (ardentia-test--with-org-file f "* TODO Go :aiready:\n:PROPERTIES:\n:ID: x-1\n:END:\n"
+    (let ((ardentia-run-task-command '("true")) (asked nil))
+      (cl-letf (((symbol-function 'y-or-n-p)
+                 (lambda (prompt)
+                   (push prompt asked)
+                   (not (string-match-p "Save" prompt)))))
+        (with-current-buffer (find-file-noselect f)
+          (goto-char (point-max))
+          (insert "edit\n")
+          (should-error (ardentia-run-task-at-point) :type 'user-error)
+          (should (buffer-modified-p))
+          (should (seq-some (lambda (p) (string-match-p "Save" p)) asked)))))))
+
 ;;;; Async fetch with a fake org-tool
 
 (defun ardentia-test--fake-env (dir)

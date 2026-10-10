@@ -38,6 +38,7 @@
 (require 'ardentia-actions)
 (require 'ardentia-review)
 (require 'ardentia-session)
+(require 'ardentia-run)
 
 (declare-function ardentia "ardentia" ())
 
@@ -102,6 +103,7 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
   "a" #'ardentia-dashboard-accept
   "s" #'ardentia-dashboard-send-back
   "l" #'ardentia-dashboard-toggle-later
+  "x" #'ardentia-dashboard-run
   "q" #'quit-window
   "?" #'ardentia)
 
@@ -236,6 +238,11 @@ Other queues signal a `user-error'; `t' shows their last transcript."
   "Send the review task at point back to the agents."
   (interactive)
   (ardentia-send-back (ardentia-dashboard--require-task t)))
+
+(defun ardentia-dashboard-run ()
+  "Run the ready (or later) task at point now."
+  (interactive)
+  (ardentia-run-task (ardentia-dashboard--require-task)))
 
 (provide 'ardentia-dashboard)
 ;;; ardentia-dashboard.el ends here
