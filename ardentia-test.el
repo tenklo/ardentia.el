@@ -341,7 +341,22 @@ Original task text
                                             ("AI_SESSION" . "20261010-1948")
                                             ("AI_ATTEMPTS" . "1")))
               (ardentia-test--t "20261010-2000"))))
-    (should (equal row ["review" "partial" "default" "1" "12m" "" "a.org" "Hi"]))))
+    (should (equal row ["review" "partial" "default" "1" "12m" "" "" "a.org" "Hi"]))))
+
+;; Cost column of the dashboard row.
+(ert-deftest ardentia-test-row-cost ()
+  (let ((now (ardentia-test--t "20261010-2000")))
+    (should (equal (aref (ardentia--task-row
+                          (ardentia-test--task
+                           :queue 'review
+                           :props '(("AI_COST_USD_TOTAL" . "4.09")))
+                          now)
+                         6)
+                   "$4.09"))
+    (should (equal (aref (ardentia--task-row
+                          (ardentia-test--task :queue 'review) now)
+                         6)
+                   ""))))
 
 (ert-deftest ardentia-test-dashboard-entries-filter ()
   (let* ((tasks (list (ardentia-test--task :queue 'ready)
@@ -1005,6 +1020,243 @@ Text
           (should-not (plist-get ardentia--state :refreshing)))
       (delete-directory dir t))))
 
+;;;; Usage and completed overview
+
+(ert-deftest ardentia-test-keep-done ()
+  (let* ((json (ardentia--parse-json ardentia-test--json))
+         (kept (ardentia--tasks-from-json json t)))
+    (should (= (length (ardentia--tasks-from-json json)) 2))
+    (should (= (length kept) 3))
+    (should (equal (mapcar (lambda (x) (plist-get x :done)) kept)
+                   '(nil t nil)))
+    (should (equal (plist-get (nth 1 kept) :title) "Finished"))
+    (should (null (plist-get (car (ardentia--tasks-from-json json)) :done)))))
+
+(ert-deftest ardentia-test-parse-number ()
+  (should (= (ardentia--parse-number "2.19") 2.19))
+  (should (= (ardentia--parse-number "5400000") 5400000))
+  (should (= (ardentia--parse-number 7) 7))
+  (should (null (ardentia--parse-number nil)))
+  (should (null (ardentia--parse-number "null")))
+  (should (null (ardentia--parse-number "")))
+  (should (null (ardentia--parse-number "12abc")))
+  (should (null (ardentia--parse-number "-3")))
+  (should (null (ardentia--parse-number "1e3"))))
+
+(ert-deftest ardentia-test-format-tokens ()
+  (should (equal (ardentia--format-tokens "950") "950"))
+  (should (equal (ardentia--format-tokens "0") "0"))
+  (should (equal (ardentia--format-tokens "1000") "1.0k"))
+  (should (equal (ardentia--format-tokens "12345") "12.3k"))
+  (should (equal (ardentia--format-tokens "999999") "1.0M"))
+  (should (equal (ardentia--format-tokens "5400000") "5.4M"))
+  (should (equal (ardentia--format-tokens nil) ""))
+  (should (equal (ardentia--format-tokens "null") ""))
+  (should (equal (ardentia--format-tokens "lots") "")))
+
+(ert-deftest ardentia-test-format-cost ()
+  (should (equal (ardentia--format-cost "4.09") "$4.09"))
+  (should (equal (ardentia--format-cost "2.1") "$2.10"))
+  (should (equal (ardentia--format-cost "3") "$3.00"))
+  (should (equal (ardentia--format-cost "0") "$0.00"))
+  (should (equal (ardentia--format-cost nil) ""))
+  (should (equal (ardentia--format-cost "null") ""))
+  (should (equal (ardentia--format-cost "n/a") "")))
+
+(ert-deftest ardentia-test-usage-line ()
+  (should (equal (ardentia--usage-line
+                  '(("AI_TOKENS_TOTAL" . "5400000") ("AI_COST_USD_TOTAL" . "4.09")
+                    ("AI_USAGE_RUNS" . "2") ("AI_TOKENS" . "3000000")
+                    ("AI_COST_USD" . "2.19")))
+                 "5.4M tokens, $4.09 over 2 runs (last run 3.0M tokens, $2.19)"))
+  (should (equal (ardentia--usage-line
+                  '(("AI_TOKENS_TOTAL" . "950") ("AI_USAGE_RUNS" . "1")))
+                 "950 tokens over 1 run"))
+  (should (equal (ardentia--usage-line '(("AI_COST_USD" . "1.5")))
+                 "last run $1.50"))
+  (should (null (ardentia--usage-line nil)))
+  (should (null (ardentia--usage-line '(("AI_STATUS" . "completed")
+                                        ("AI_TOKENS_TOTAL" . "null"))))))
+
+(ert-deftest ardentia-test-review-usage-line ()
+  (let ((text (ardentia-review--render-string
+               (list :title "T" :file "/o/a.org" :tags nil
+                     :props '(("AI_STATUS" . "completed")
+                              ("AI_TOKENS_TOTAL" . "5400000")
+                              ("AI_COST_USD_TOTAL" . "4.09")
+                              ("AI_USAGE_RUNS" . "2"))
+                     :body ""))))
+    (should (string-match-p
+             "\\*\\* Agent properties\n- Usage :: 5.4M tokens, \\$4.09 over 2 runs\n- AI_STATUS"
+             text)))
+  (should-not (string-match-p
+               "Usage ::"
+               (ardentia-review--render-string
+                (list :title "T" :file "/o/a.org" :tags nil
+                      :props '(("AI_STATUS" . "completed")) :body "")))))
+
+(defconst ardentia-test--now "20261010-1200"
+  "Reference time of the completed view tests.")
+
+(ert-deftest ardentia-test-completed-period ()
+  (let* ((now (ardentia-test--t ardentia-test--now))
+         (at (lambda (stamp) (ardentia-test--task
+                              :props `(("AI_SESSION" . ,stamp)))))
+         (none (ardentia-test--task)))
+    (should (equal (mapcar #'ardentia-completed--period-label
+                           ardentia-completed--periods)
+                   '("all" "last 30 days" "last 7 days" "today")))
+    (should (eq (ardentia-completed--next-period 'all) 'last-30-days))
+    (should (eq (ardentia-completed--next-period 'today) 'all))
+    (should (ardentia-completed--in-period-p none 'all now))
+    (should-not (ardentia-completed--in-period-p none 'today now))
+    (should-not (ardentia-completed--in-period-p none 'last-7-days now))
+    ;; today: from 00:00 on, inclusive
+    (should (ardentia-completed--in-period-p (funcall at "20261010-0000") 'today now))
+    (should-not (ardentia-completed--in-period-p (funcall at "20261009-2359") 'today now))
+    ;; 7 days: exactly 7 days before NOW is still inside
+    (should (ardentia-completed--in-period-p (funcall at "20261003-1200") 'last-7-days now))
+    (should-not (ardentia-completed--in-period-p (funcall at "20261003-1159") 'last-7-days now))
+    (should (ardentia-completed--in-period-p (funcall at "20260910-1200") 'last-30-days now))
+    (should-not (ardentia-completed--in-period-p (funcall at "20260910-1159") 'last-30-days now))
+    (should-not (ardentia-completed--in-period-p
+                 (ardentia-test--task :props '(("AI_SESSION" . "garbage")))
+                 'last-30-days now))))
+
+(ert-deftest ardentia-test-completed-select-and-sort ()
+  (let* ((now (ardentia-test--t ardentia-test--now))
+         (mk (lambda (title stamp done)
+               (ardentia-test--task :title title :done done
+                                    :props (and stamp `(("AI_SESSION" . ,stamp)))))))
+    (let ((tasks (list (funcall mk "old" "20260101-0800" t)
+                       (funcall mk "none" nil nil)
+                       (funcall mk "new" "20261010-0900" nil)
+                       (funcall mk "mid" "20261008-0900" t))))
+      (should (equal (mapcar (lambda (e) (plist-get (car e) :title))
+                             (ardentia-completed--entries tasks 'all nil now))
+                     '("new" "mid" "old" "none")))
+      (should (equal (mapcar (lambda (e) (plist-get (car e) :title))
+                             (ardentia-completed--entries tasks 'last-7-days nil now))
+                     '("new" "mid")))
+      (should (equal (mapcar (lambda (e) (plist-get (car e) :title))
+                             (ardentia-completed--entries tasks 'all t now))
+                     '("new" "none"))))))
+
+(ert-deftest ardentia-test-completed-totals ()
+  (let* ((a (ardentia-test--task
+             :props '(("AI_STATUS" . "completed") ("AI_TOKENS_TOTAL" . "1000000")
+                      ("AI_COST_USD_TOTAL" . "1.50"))))
+         (b (ardentia-test--task
+             :props '(("AI_STATUS" . "blocked") ("AI_TOKENS_TOTAL" . "500")
+                      ("AI_COST_USD_TOTAL" . "null"))))
+         (c (ardentia-test--task :props '(("AI_STATUS" . "partial"))))
+         (d (ardentia-test--task))
+         (tot (ardentia-completed--totals (list a b c d))))
+    (should (= (plist-get tot :count) 4))
+    (should (= (plist-get tot :completed) 1))
+    (should (= (plist-get tot :blocked) 1))
+    (should (= (plist-get tot :partial) 1))
+    (should (= (plist-get tot :tokens) 1000500))
+    (should (= (plist-get tot :cost) 1.5))
+    (should (= (plist-get tot :with-usage) 2))
+    (should (equal (ardentia-completed--summary (list a b c d))
+                   " 4 tasks (1 completed, 1 blocked, 1 partial) | 1.0M tokens, $1.50 (2 with usage data)"))
+    (should (equal (ardentia-completed--summary (list c))
+                   " 1 task (0 completed, 0 blocked, 1 partial) | no usage data"))
+    (should (= (plist-get (ardentia-completed--totals nil) :count) 0))))
+
+(ert-deftest ardentia-test-completed-row ()
+  (should (equal (ardentia-completed--row
+                  (ardentia-test--task
+                   :todo "DONE" :title "Hi" :file "/o/a.org"
+                   :props '(("AI_SESSION" . "20261010-1953") ("AI_STATUS" . "completed")
+                            ("AI_CLAIMED_BY" . "alpha") ("AI_USAGE_RUNS" . "2")
+                            ("AI_TOKENS_TOTAL" . "5400000")
+                            ("AI_COST_USD_TOTAL" . "4.09"))))
+                 ["2026-10-10 19:53" "DONE" "completed" "alpha" "2" "5.4M" "$4.09"
+                  "a.org" "Hi"]))
+  (should (equal (ardentia-completed--row
+                  (ardentia-test--task :todo "TODO" :title "Old" :file "/o/a.org"))
+                 ["" "TODO" "" "" "" "" "" "a.org" "Old"])))
+
+(ert-deftest ardentia-test-completed-number-sort ()
+  (let ((pred (ardentia-completed--number-less #'ardentia--task-tokens-total))
+        (small (list (ardentia-test--task :props '(("AI_TOKENS_TOTAL" . "950")))))
+        (big (list (ardentia-test--task :props '(("AI_TOKENS_TOTAL" . "12300")))))
+        (none (list (ardentia-test--task))))
+    ;; 950 < 12300 numerically (a string sort would say otherwise)
+    (should (funcall pred small big))
+    (should-not (funcall pred big small))
+    (should (funcall pred none small))
+    (should-not (funcall pred none none))))
+
+(ert-deftest ardentia-test-completed-header-and-keys ()
+  (let ((now (ardentia-test--t ardentia-test--now)))
+    (should (string-match-p
+             "Period: last 7 days | only waiting for review | Refreshed: never | ERROR: boom"
+             (ardentia-completed--info-line nil 'last-7-days t nil "boom" nil now)))
+    (should (string-match-p
+             "refreshing\\.\\.\\.\\'"
+             (ardentia-completed--info-line nil 'all nil nil nil t now))))
+  (dolist (pair '(("g" . ardentia-completed-refresh) ("RET" . ardentia-completed-review)
+                  ("t" . ardentia-completed-transcript) ("o" . ardentia-completed-visit)
+                  ("p" . ardentia-completed-cycle-period)
+                  ("r" . ardentia-completed-toggle-open) ("?" . ardentia)))
+    (should (eq (keymap-lookup ardentia-completed-mode-map (car pair)) (cdr pair))))
+  (should (eq (keymap-lookup ardentia-dashboard-mode-map "c") 'ardentia-completed))
+  (with-temp-buffer
+    (ardentia-completed-mode)
+    (should (eq ardentia-completed--period ardentia-completed-period))
+    (let ((ardentia-completed--tasks (list (ardentia-test--task :title "X"))))
+      (ardentia-completed--render)
+      (should (= (length tabulated-list-entries) 1))
+      (ardentia-completed-toggle-open)
+      (should ardentia-completed--only-open)
+      (ardentia-completed-cycle-period)
+      (should (eq ardentia-completed--period 'last-30-days))
+      (should (= (length tabulated-list-entries) 0)))))
+
+(ert-deftest ardentia-test-completed-fetch-async ()
+  (let* ((dir (make-temp-file "ardentia-fake-" t))
+         (ardentia-org-directory dir)
+         (ardentia-org-tool (expand-file-name "ai/tools/org-tool" dir))
+         got-tasks got-err done)
+    (unwind-protect
+        (progn
+          (ardentia-test--fake-env dir)
+          (ardentia-completed--fetch (lambda (tasks err)
+                                       (setq got-tasks tasks got-err err done t)))
+          (should-not done)
+          (ardentia-test--wait (lambda () done))
+          (should (null got-err))
+          ;; the canned output holds the open and the done task (plus one
+          ;; untagged element the fake returns as is); aiready is not asked
+          (should (equal (mapcar (lambda (x) (plist-get x :title)) got-tasks)
+                         '("Review me" "Finished" "Plain")))
+          (should (equal (mapcar (lambda (x) (plist-get x :done)) got-tasks)
+                         '(nil t nil)))
+          (let ((log (with-temp-buffer
+                       (insert-file-contents (expand-file-name "args.log" dir))
+                       (buffer-string))))
+            (should (string-match-p "find-tagged humanreview .*a\\.org" log))
+            (should-not (string-match-p "aiready" log))))
+      (delete-directory dir t))))
+
+(ert-deftest ardentia-test-completed-fetch-failure ()
+  (let* ((dir (make-temp-file "ardentia-fake-" t))
+         (ardentia-org-directory dir)
+         (ardentia-org-tool (expand-file-name "ai/tools/fail-tool" dir))
+         got-tasks got-err done)
+    (unwind-protect
+        (progn
+          (ardentia-test--fake-env dir)
+          (ardentia-completed--fetch (lambda (tasks err)
+                                       (setq got-tasks tasks got-err err done t)))
+          (ardentia-test--wait (lambda () done))
+          (should (null got-tasks))
+          (should (string-match-p "failed: boom" got-err)))
+      (delete-directory dir t))))
+
 ;;;; Session transcripts
 
 (defvar agent-shell-session-restore-verbosity)
@@ -1603,12 +1855,12 @@ otherwise.  It logs the arguments, and the stdin text of a send."
     (should (equal (aref (ardentia--task-row
                           (ardentia-test--task :queue 'ready :priority "A" :title "Do it")
                           now)
-                         7)
+                         8)
                    "[#A] Do it"))
     (should (equal (aref (ardentia--task-row
                           (ardentia-test--task :queue 'ready :title "Plain")
                           now)
-                         7)
+                         8)
                    "Plain"))))
 
 (defconst ardentia-test--prio-org

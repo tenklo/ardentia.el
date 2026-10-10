@@ -41,6 +41,7 @@
 (require 'ardentia-run)
 
 (declare-function ardentia "ardentia" ())
+(declare-function ardentia-completed "ardentia-completed" ())
 
 (defvar-local ardentia-dashboard--filter nil
   "Queue symbol this dashboard buffer is restricted to, or nil for all.")
@@ -136,6 +137,7 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
   "-" #'ardentia-dashboard-priority-down
   "S-<down>" #'ardentia-dashboard-priority-down
   "q" #'quit-window
+  "c" #'ardentia-completed
   "?" #'ardentia)
 
 (define-derived-mode ardentia-dashboard-mode tabulated-list-mode "Ardentia"
@@ -144,7 +146,8 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
 \\{ardentia-dashboard-mode-map}"
   (setq tabulated-list-format
         [("Queue" 8 nil) ("Status" 10 nil) ("Host" 10 nil) ("Att" 4 nil)
-         ("Age" 5 nil) ("Flags" 12 nil) ("File" 18 nil) ("Title" 0 nil)])
+         ("Age" 5 nil) ("Flags" 12 nil) ("Cost" 7 nil :right-align t)
+         ("File" 18 nil) ("Title" 0 nil)])
   (setq tabulated-list-padding 1)
   (setq tabulated-list-sort-key nil)
   (setq ardentia--current-task-function #'ardentia-dashboard--task-at-point)

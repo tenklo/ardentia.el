@@ -42,6 +42,7 @@
 (require 'ardentia-review)
 (require 'ardentia-session)
 (require 'ardentia-dashboard)
+(require 'ardentia-completed)
 (require 'ardentia-capture)
 (require 'ardentia-run)
 (require 'ardentia-modeline)
@@ -57,6 +58,7 @@
   [["View"
     ("d" "Dashboard" ardentia-dashboard)
     ("r" "Review inbox" ardentia-review-inbox)
+    ("c" "Completed tasks" ardentia-completed)
     ("g" "Refresh" ardentia-refresh-dashboards)
     ("m" "Toggle mode-line counter" ardentia-mode-line-mode)]
    ["Create"

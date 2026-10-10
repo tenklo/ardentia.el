@@ -181,6 +181,8 @@ Return a plist; signal a `user-error' when the heading is missing."
                       (abbreviate-file-name (plist-get info :file))
                       (file-name-nondirectory (plist-get info :file)))))
     (insert "** Agent properties\n")
+    (when-let* ((usage (ardentia--usage-line (plist-get info :props))))
+      (insert "- Usage :: " usage "\n"))
     (if (plist-get info :props)
         (dolist (p (plist-get info :props))
           (insert (format "- %s :: %s\n" (car p) (cdr p))))

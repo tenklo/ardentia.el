@@ -120,17 +120,19 @@ Signal an error when STRING is not valid JSON."
           ((stringp v) v)
           (t (format "%s" v)))))
 
-(defun ardentia--task-from-json (alist)
+(defun ardentia--task-from-json (alist &optional keep-done)
   "Convert one decoded `org-tool' element ALIST into a task plist.
-Return nil when the element is done."
+Return nil when the element is done, unless KEEP-DONE is non-nil.  The
+plist then also carries `:done', non-nil for a done element."
   (let* ((done (alist-get 'done alist))
          (tags (mapcar #'ardentia--stringify (ardentia--val (alist-get 'tags alist))))
          (props (mapcar (lambda (cell)
                           (cons (symbol-name (car cell))
                                 (ardentia--stringify (cdr cell))))
                         (ardentia--val (alist-get 'properties alist)))))
-    (unless (and done (not (eq done :false)))
-      (list :file (alist-get 'file alist)
+    (unless (and done (not (eq done :false)) (not keep-done))
+      (list :done (and done (not (eq done :false)) t)
+            :file (alist-get 'file alist)
             :line (alist-get 'line alist)
             :level (alist-get 'level alist)
             :todo (ardentia--stringify (alist-get 'todo alist))
@@ -144,10 +146,11 @@ Return nil when the element is done."
             :props props
             :queue (ardentia--tag-queue tags)))))
 
-(defun ardentia--tasks-from-json (list)
+(defun ardentia--tasks-from-json (list &optional keep-done)
   "Convert the decoded `org-tool' LIST into task plists.
-Done tasks are dropped."
-  (delq nil (mapcar #'ardentia--task-from-json list)))
+Done tasks are dropped unless KEEP-DONE is non-nil."
+  (delq nil (mapcar (lambda (alist) (ardentia--task-from-json alist keep-done))
+                    list)))
 
 (defun ardentia--task-key (task)
   "Return the identity of TASK for deduplication."
@@ -180,6 +183,74 @@ Return nil when STRING is absent or malformed."
         (let ((n (lambda (i) (string-to-number (match-string i s)))))
           (encode-time (list 0 (funcall n 5) (funcall n 4) (funcall n 3)
                              (funcall n 2) (funcall n 1) nil -1 nil)))))))
+
+;;;; Pure parts: usage (tokens and cost)
+
+(defun ardentia--parse-number (value)
+  "Return VALUE as a non-negative number, or nil.
+VALUE may be a number or a string like \"2.19\" or \"5400000\"; nil, the
+string \"null\", the empty string and any garbage give nil."
+  (let ((v (ardentia--val value)))
+    (cond ((and (numberp v) (>= v 0)) v)
+          ((and (stringp v) (string-match-p "\\`[0-9]+\\(?:\\.[0-9]+\\)?\\'" v))
+           (string-to-number v))
+          (t nil))))
+
+(defun ardentia--format-tokens (value)
+  "Format the token count VALUE compactly: 950, 12.3k, 5.4M.
+Nil, \"null\" and garbage give the empty string, never \"0\"."
+  (let ((n (ardentia--parse-number value)))
+    (cond ((null n) "")
+          ((< n 1000) (format "%d" (round n)))
+          ((< n 999950) (format "%.1fk" (/ n 1000.0)))
+          (t (format "%.1fM" (/ n 1000000.0))))))
+
+(defun ardentia--format-cost (value)
+  "Format the cost VALUE in US dollars as \"$4.09\".
+Nil, \"null\" and garbage give the empty string, never \"$0.00\"."
+  (let ((n (ardentia--parse-number value)))
+    (if n (format "$%.2f" n) "")))
+
+(defun ardentia--task-tokens-total (task)
+  "Return the tokens TASK used over all runs (AI_TOKENS_TOTAL), or nil."
+  (ardentia--parse-number (ardentia--task-prop task "AI_TOKENS_TOTAL")))
+
+(defun ardentia--task-cost-total (task)
+  "Return the cost in USD of TASK over all runs (AI_COST_USD_TOTAL), or nil."
+  (ardentia--parse-number (ardentia--task-prop task "AI_COST_USD_TOTAL")))
+
+(defun ardentia--usage-line (props)
+  "Return a readable usage summary from PROPS, an alist of strings, or nil.
+Example: \"5.4M tokens, $4.09 over 2 runs (last run 3.0M tokens, $2.19)\".
+Return nil when none of the usage properties holds a usable value."
+  (let* ((get (lambda (name) (ardentia--parse-number
+                              (ardentia--val (cdr (assoc name props))))))
+         (tokens (funcall get "AI_TOKENS_TOTAL"))
+         (cost (funcall get "AI_COST_USD_TOTAL"))
+         (runs (funcall get "AI_USAGE_RUNS"))
+         (last-tokens (funcall get "AI_TOKENS"))
+         (last-cost (funcall get "AI_COST_USD"))
+         (amounts (lambda (tk co)
+                    (string-join
+                     (delq nil (list (and tk (concat (ardentia--format-tokens tk)
+                                                     " tokens"))
+                                     (and co (ardentia--format-cost co))))
+                     ", ")))
+         (total (funcall amounts tokens cost))
+         (last (funcall amounts last-tokens last-cost))
+         (runs-text (and runs (format "%d run%s" (round runs)
+                                      (if (= (round runs) 1) "" "s"))))
+         (main (string-join
+                (delq nil (list (and (not (string-empty-p total)) total)
+                                (and runs-text
+                                     (if (string-empty-p total)
+                                         runs-text
+                                       (concat "over " runs-text)))))
+                " ")))
+    (cond ((and (string-empty-p main) (string-empty-p last)) nil)
+          ((string-empty-p last) main)
+          ((string-empty-p main) (format "last run %s" last))
+          (t (format "%s (last run %s)" main last)))))
 
 (defun ardentia--format-age (seconds)
   "Format the age SECONDS as \"12m\", \"3h\" or \"2d\".  Nil gives \"\"."
@@ -338,13 +409,15 @@ With NOW, ready tasks that are not yet due sort last, soonest due first."
     ('later "later") (_ "")))
 
 (defun ardentia--task-row (task now)
-  "Return the dashboard row vector for TASK at time NOW."
+  "Return the dashboard row vector for TASK at time NOW.
+The Cost column is empty for a task without usage data."
   (vector (ardentia--queue-name task now)
           (or (ardentia--task-prop task "AI_STATUS") "")
           (ardentia--task-host task)
           (ardentia--task-attempts task)
           (ardentia--format-age (ardentia--task-age task now))
           (ardentia--task-flags task now)
+          (ardentia--format-cost (ardentia--task-cost-total task))
           (file-name-nondirectory (or (plist-get task :file) ""))
           (let ((p (ardentia--stringify (plist-get task :priority))))
             (if p

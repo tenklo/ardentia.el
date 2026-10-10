@@ -59,8 +59,15 @@ tag `NAME_only`.
   it from disk.
 
 Properties ardentia shows when present: `AI_STATUS` (completed, blocked,
-partial), `AI_SESSION`, `AI_CLAIMED`, `AI_CLAIMED_BY`,
-`AI_LIMIT_INTERRUPTED`, `AI_ATTEMPTS`. A run report is an item at the top
+partial), `AI_SESSION` (`YYYYMMDD-HHMM`, when the work finished),
+`AI_CLAIMED`, `AI_CLAIMED_BY`, `AI_LIMIT_INTERRUPTED`, `AI_ATTEMPTS`.
+The usage properties are the runner's contract; the runner writes them
+(as strings) after every run: `AI_TOKENS` (tokens of the last run, an
+integer), `AI_TOKENS_TOTAL` (sum over all runs), `AI_COST_USD` (cost of
+the last run in US dollars, for example `2.19`), `AI_COST_USD_TOTAL`
+(sum over all runs) and `AI_USAGE_RUNS` (number of runs). Tasks that
+were finished before the runner wrote them simply have none; ardentia
+then shows empty cells, never 0. A run report is an item at the top
 of the `:LOGBOOK:` drawer that starts with `- AI-Lauf [TIMESTAMP]`; the
 review buffer shows the newest one and the `- Note taken on` items above
 it.
@@ -81,9 +88,10 @@ while `ardentia-mode-line-mode` is on.
 
 | Command                  | What it does                                         |
 |--------------------------|------------------------------------------------------|
-| `ardentia`               | Transient menu (d r n D g m, x in org buffers)       |
+| `ardentia`               | Transient menu (d r c n D g m, x in org buffers)       |
 | `ardentia-dashboard`     | All queues in `*ardentia*`: review, running, ready, later |
 | `ardentia-review-inbox`  | Same view, only tasks waiting for review             |
+| `ardentia-completed`     | All tasks handed back, accepted or not, with tokens and cost in `*ardentia-completed*` |
 | `ardentia-review-task`   | Read-only org view of one task (run report, notes, child sections) |
 | `ardentia-session-open` | Read-only, live-following transcript of the agent session of a task |
 | `ardentia-session-open-agent-shell` | Resume that session in `agent-shell` (optional package) |
@@ -109,7 +117,8 @@ raise/lower it (ready and later tasks only),
 found by its line or, failing that, by its unique title; `x` creates the
 ID and saves the file first),
 `a` accept, `s` send back, `l` hide or show later tasks, `x` run the ready
-or later task now, `q` quit, `?` menu.
+or later task now, `c` completed tasks overview, `q` quit, `?` menu.
+The Cost column shows `AI_COST_USD_TOTAL` for every task that has it.
 
 Queue `later`: the runner only picks up an `:aiready:` task once its
 SCHEDULED time is due, so a ready task scheduled in the future is listed
@@ -129,11 +138,39 @@ shows the cookie like org-agenda. The real order of the runner comes from
 its own order configuration, where priority is one rule after a few
 urgency rules, so the dashboard order is an approximation.
 
+### Keys in the completed view
+
+`ardentia-completed` (`c` in the menu and in the dashboard) lists every
+heading tagged `:humanreview:`, still waiting for review as well as
+accepted (DONE, CANC; accepting keeps the tag). It fetches
+asynchronously with its own `org-tool find-tagged humanreview` call;
+errors show in the header line. The columns are Finished (`AI_SESSION`),
+State (the TODO keyword: DONE or CANC means accepted), Status
+(`AI_STATUS`), Host (`AI_CLAIMED_BY`), Runs (`AI_USAGE_RUNS`), Tokens
+(`AI_TOKENS_TOTAL`, as 950, 12.3k, 5.4M), Cost (`AI_COST_USD_TOTAL`),
+File and Title. Click a header (or `S`) to sort; Runs, Tokens and Cost
+sort numerically. The default order is newest Finished first, tasks
+without `AI_SESSION` last. Missing usage data gives empty cells.
+
+The header line shows the number of tasks shown with the split into
+completed, blocked and partial, the summed tokens and cost with
+"(N with usage data)" (only tasks that carry usage properties add to the
+sums), the period, the time of the last refresh and an error if any.
+
+`g` refresh, `RET` review buffer (also for accepted tasks), `t` session
+transcript, `o` visit the heading, `p` cycle the period (all, last 30
+days, last 7 days, today; by `AI_SESSION`, so tasks without it only show
+under all), `r` toggle between all tasks and only those still waiting for
+review, `q` quit, `?` menu.
+
 ### Keys in the review buffer
 
 `a` accept, `s` send back (asks for a note), `y` let the agents do an open
 child TODO themselves, `o` visit the heading, `t` session transcript,
 `g` re-render, `q` quit.
+When the usage properties exist, the section "Agent properties" starts
+with one line such as `- Usage :: 5.4M tokens, $4.09 over 2 runs (last
+run 3.0M tokens, $2.19)`.
 The buffer uses `org-indent-mode`; set `ardentia-review-indent` to nil to turn that off.
 
 ### Session transcripts
@@ -198,6 +235,8 @@ viewer RET uses on a running task.
 `ardentia-hosts-file`, `ardentia-capture-file`,
 `ardentia-mode-line-interval`, `ardentia-process-timeout`,
 `ardentia-stale-minutes`, `ardentia-dashboard-show-later`,
+`ardentia-completed-period` (default `all`; also `last-30-days`,
+`last-7-days`, `today`),
 `ardentia-dashboard-refresh-interval` (default 60 seconds, nil or 0 turns the
 automatic refresh off; only dashboards shown on a visible frame are refreshed,
 never while the minibuffer is active or a refresh runs; re-open the dashboard
@@ -237,6 +276,7 @@ to restart the timer),
 - `ardentia-review.el` review buffer
 - `ardentia-session.el` session transcript viewer, optional agent-shell
 - `ardentia-dashboard.el` dashboard and review inbox
+- `ardentia-completed.el` overview of completed tasks with tokens and cost
 - `ardentia-capture.el` new task and delegate
 - `ardentia-run.el` start the runner on one task now
 - `ardentia-modeline.el` mode-line counter
