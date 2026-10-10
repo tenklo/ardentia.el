@@ -1388,6 +1388,8 @@ Text
                      (lambda (tk) (push (list 'viewer (plist-get tk :id)) calls)))
                     ((symbol-function 'ardentia-session-open)
                      (lambda (tk) (push (list 'session (plist-get tk :id)) calls)))
+                    ((symbol-function 'ardentia-session-attach)
+                     (lambda (tk) (push (list 'attach (plist-get tk :id)) calls)))
                     ((symbol-function 'ardentia-session-open-agent-shell)
                      (lambda (tk) (push (list 'shell (plist-get tk :id)) calls))))
             (dolist (tk tasks)
@@ -1400,7 +1402,7 @@ Text
                 (ardentia-dashboard-agent-shell)))
             (should (equal (reverse calls)
                            '((review "r") (session "r") (shell "r")
-                             (viewer "u") (session "u") (shell "u")
+                             (viewer "u") (session "u") (attach "u")
                              (session "y") (shell "y"))))
             (should (eq (lookup-key ardentia-dashboard-mode-map (kbd "RET"))
                         #'ardentia-dashboard-enter))
@@ -1411,6 +1413,126 @@ Text
             (should (eq (lookup-key ardentia-review-mode-map "t")
                         #'ardentia-review-transcript))))
       (kill-buffer buf))))
+
+;;;; Live input
+
+(defmacro ardentia-test--with-say (dir script-var exit-check exit-send &rest body)
+  "Run BODY with a stub say command in DIR; SCRIPT-VAR names its log file.
+The stub exits with EXIT-CHECK for \"--check\" and with EXIT-SEND
+otherwise.  It logs the arguments, and the stdin text of a send."
+  (declare (indent 4))
+  `(let* ((,script-var (expand-file-name "say.log" ,dir))
+          (script (expand-file-name "say" ,dir))
+          (ardentia-session-say-command script))
+     (ardentia-test--write
+      script
+      (format "#!/bin/sh\necho \"ARGS: $*\" >> '%s'\nif [ \"$1\" = --check ]; then exit %d; fi\ncat >> '%s'\nexit %d\n"
+              ,script-var ,exit-check ,script-var ,exit-send))
+     (set-file-modes script #o755)
+     ,@body))
+
+(defun ardentia-test--slurp (file)
+  "Return the contents of FILE, or nil when it does not exist."
+  (when (file-exists-p file)
+    (with-temp-buffer (insert-file-contents file) (buffer-string))))
+
+(defun ardentia-test--running-session (dir)
+  "Write a session for task id-1 into DIR and return the task."
+  (ardentia-test--write
+   (expand-file-name (concat ardentia-test--sid-1 ".jsonl") dir)
+   (ardentia-test--json-line (ardentia-test--prompt-rec "id-1")))
+  (list :id "id-1" :title "Live" :queue 'running))
+
+(ert-deftest ardentia-test-session-attach-live ()
+  (ardentia-test--with-sessions dir
+    (ardentia-test--with-say dir log 0 0
+      (let ((task (ardentia-test--running-session dir))
+            (ardentia-session-follow-interval 1000)
+            shell)
+        (cl-letf (((symbol-function 'yes-or-no-p)
+                   (lambda (&rest _) (error "Must not ask")))
+                  ((symbol-function 'ardentia-session-open-agent-shell)
+                   (lambda (_) (setq shell t))))
+          (save-window-excursion
+            (let ((orig (selected-window))
+                  (buf (progn (switch-to-buffer (get-buffer-create " *ardentia-test-origin*"))
+                              nil)))
+              (ignore buf)
+              (ardentia-session-attach task)
+              (should-not shell)
+              (should (eq (selected-window) orig))
+              (should (eq (window-buffer orig)
+                          (get-buffer "*ardentia-session: Live*")))
+              (with-current-buffer (window-buffer orig)
+                (should ardentia-session--input)
+                (should (string-match-p "input: i" (ardentia-session--header)))
+                (should (eq (key-binding "i") #'ardentia-session-compose))))))
+        (should (string-match-p "--check session-one" (ardentia-test--slurp log)))
+        (kill-buffer " *ardentia-test-origin*")))))
+
+(ert-deftest ardentia-test-session-attach-not-live ()
+  (ardentia-test--with-sessions dir
+    (ardentia-test--with-say dir log 3 0
+      (let ((task (ardentia-test--running-session dir))
+            shell msgs)
+        (cl-letf (((symbol-function 'ardentia-session-open-agent-shell)
+                   (lambda (tk) (setq shell tk)))
+                  ((symbol-function 'message)
+                   (lambda (fmt &rest args) (push (apply #'format fmt args) msgs))))
+          (ardentia-session-attach task))
+        (should (eq shell task))
+        (should (string-match-p "does not accept live input" (car msgs)))
+        (should-not (get-buffer "*ardentia-session: Live*"))))))
+
+(ert-deftest ardentia-test-session-send ()
+  (ardentia-test--with-sessions dir
+    (ardentia-test--with-say dir log 0 0
+      (let ((text "line one\n  line two \u00e4\u00f6\n"))
+        (should (ardentia-session-send "sid-9" text))
+        (should (equal (ardentia-test--slurp log)
+                       (concat "ARGS: sid-9\n" text)))))
+    (ardentia-test--with-say dir log 0 3
+      (let ((err (should-error (ardentia-session-send "sid-9" "hi")
+                               :type 'user-error)))
+        (should (string-match-p "resumes it in agent-shell" (cadr err)))))
+    (ardentia-test--with-say dir log 0 4
+      (should-error (ardentia-session-send "sid-9" "hi") :type 'user-error))
+    (should-error (ardentia-session-send "sid-9" "  \n") :type 'user-error)))
+
+(ert-deftest ardentia-test-session-compose-send-and-abort ()
+  (ardentia-test--with-sessions dir
+    (ardentia-test--with-say dir log 0 0
+      (let ((task (ardentia-test--running-session dir))
+            (ardentia-session-follow-interval 1000))
+        (save-window-excursion
+          (let ((src (ardentia-session-open task t)))
+            (with-current-buffer src (setq ardentia-session--follow nil))
+            (progn (switch-to-buffer src) (ardentia-session-compose))
+            (should (derived-mode-p 'ardentia-session-compose-mode))
+            (should (string-match-p "C-c C-c" (format "%s" header-line-format)))
+            (insert "multi\nline")
+            (ardentia-session-compose-send)
+            (should (eq (current-buffer) src))
+            (should (buffer-local-value 'ardentia-session--follow src))
+            (should (equal (ardentia-test--slurp log)
+                           "ARGS: --check session-one\nARGS: session-one\nmulti\nline"))
+            ;; Abort sends nothing.
+            (progn (switch-to-buffer src) (ardentia-session-compose))
+            (insert "never")
+            (ardentia-session-compose-abort)
+            (should (eq (current-buffer) src))
+            (should-not (string-match-p "never" (ardentia-test--slurp log)))))))))
+
+(ert-deftest ardentia-test-session-compose-not-live ()
+  (ardentia-test--with-sessions dir
+    (ardentia-test--with-say dir log 3 3
+      (let ((task (ardentia-test--running-session dir)))
+        (save-window-excursion
+          (let ((src (ardentia-session-open task t)))
+            (progn (switch-to-buffer src) (ardentia-session-compose))
+            (insert "hello")
+            (should-error (ardentia-session-compose-send) :type 'user-error)
+            (kill-buffer (current-buffer))))))))
 
 ;;;; Priority
 

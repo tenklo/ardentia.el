@@ -72,6 +72,14 @@ session in the optional agent-shell package."
   :type '(choice (const minimal) (const last) (const first-last) (const full))
   :group 'ardentia)
 
+(defcustom ardentia-session-say-command
+  (expand-file-name "ai/tools/aiready-say" ardentia-org-directory)
+  "Path of the `aiready-say' program that feeds a running session.
+\"--check SESSION\" exits 0 when the session accepts live input; with
+the message on stdin, \"SESSION\" sends it into the running process."
+  :type 'file
+  :group 'ardentia)
+
 (defcustom ardentia-session-follow-interval 2
   "Seconds between two reads of the transcript while following."
   :type 'number
@@ -353,6 +361,9 @@ PREFIX is the subagent prefix (a string, possibly empty)."
 (defvar-local ardentia-session--finished nil
   "Non-nil when the session counts as finished.")
 
+(defvar-local ardentia-session--input nil
+  "Non-nil when the session accepted live input at the last check.")
+
 (defvar ardentia-session--timer nil
   "The timer polling all following transcript buffers, or nil.")
 
@@ -361,6 +372,7 @@ PREFIX is the subagent prefix (a string, possibly empty)."
   "g" #'ardentia-session-reread
   "f" #'ardentia-session-toggle-follow
   "o" #'ardentia-session-visit
+  "i" #'ardentia-session-compose
   "a" #'ardentia-session-agent-shell-here
   "q" #'quit-window
   "?" #'ardentia)
@@ -375,13 +387,15 @@ PREFIX is the subagent prefix (a string, possibly empty)."
 
 (defun ardentia-session--header ()
   "Return the header line of the current transcript buffer."
-  (format " %s | session %s | %s"
+  (format " %s | session %s | %s%s"
           (or (plist-get ardentia-session--task :title) "task")
           (if ardentia-session--file
               (file-name-base ardentia-session--file) "none")
           (cond (ardentia-session--finished "finished")
                 (ardentia-session--follow "following")
-                (t "not following"))))
+                (t "not following"))
+          (if (and ardentia-session--input (not ardentia-session--finished))
+              " | input: i" "")))
 
 (defun ardentia-session--live-buffers (&optional except)
   "Return the live transcript buffers, without EXCEPT."
@@ -495,6 +509,7 @@ when it was there."
           (dolist (w wins) (set-window-point w (point-max)))
           (set-buffer-modified-p nil)))))
   (setq ardentia-session--finished (ardentia-session--finished-p))
+  (when ardentia-session--finished (setq ardentia-session--input nil))
   (force-mode-line-update))
 
 (defun ardentia-session--reset ()
@@ -538,9 +553,12 @@ when it was there."
                   (or (plist-get task :title) "this task"))))
 
 ;;;###autoload
-(defun ardentia-session-open (task)
+(defun ardentia-session-open (task &optional same-window)
   "Open the transcript of TASK (a task plist, default the task at point).
-While the task runs the buffer follows the transcript like `tail -f'."
+While the task runs the buffer follows the transcript like `tail -f'.
+When the session accepts live input (see `ardentia-session-say-command')
+the header says so and `i' sends a message into it.  With SAME-WINDOW
+non-nil the buffer replaces the one in the current window."
   (interactive (list (ardentia--current-task)))
   (let* ((file (ardentia-session--require-file task))
          (buf (get-buffer-create
@@ -551,12 +569,102 @@ While the task runs the buffer follows the transcript like `tail -f'."
             ardentia-session--file file)
       (ardentia-session--reset)
       (ardentia-session--poll)
+      (setq ardentia-session--input
+            (and (not ardentia-session--finished)
+                 (ardentia-session--live-p (file-name-base file))))
       (setq ardentia-session--follow (not ardentia-session--finished))
       (goto-char (point-max))
       (ardentia-session--ensure-timer))
-    (pop-to-buffer buf)
+    (if same-window (pop-to-buffer-same-window buf) (pop-to-buffer buf))
     (with-current-buffer buf (goto-char (point-max)))
     buf))
+
+;;;; Live input
+
+(defun ardentia-session--live-p (session)
+  "Return non-nil when SESSION (an id) accepts live input."
+  (and (file-executable-p ardentia-session-say-command)
+       (eq 0 (ignore-errors
+               (call-process ardentia-session-say-command nil nil nil
+                             "--check" session)))))
+
+(defun ardentia-session-send (session text)
+  "Send TEXT as a user message into the running SESSION (an id).
+Signal a `user-error' when that fails."
+  (when (string-blank-p text) (user-error "Nothing to send"))
+  (unless (file-executable-p ardentia-session-say-command)
+    (user-error "Say command not found: %s" ardentia-session-say-command))
+  (let ((code (with-temp-buffer
+                (insert text)
+                (let ((coding-system-for-write 'utf-8))
+                  (call-process-region (point-min) (point-max)
+                                       ardentia-session-say-command
+                                       nil nil nil session)))))
+    (pcase code
+      (0 t)
+      (3 (user-error "Session does not accept live input (finished, other computer or older run); `a' resumes it in agent-shell"))
+      (4 (user-error "Sending timed out; the session did not read its input"))
+      (1 (user-error "Nothing to send"))
+      (2 (user-error "Sending needs jq, which is missing"))
+      (_ (user-error "Sending failed (exit %s)" code)))))
+
+(defvar-local ardentia-session-compose--buffer nil
+  "Transcript buffer the compose buffer sends to.")
+
+(defvar-local ardentia-session-compose--windows nil
+  "Window configuration to restore after the compose buffer is done.")
+
+(defvar-keymap ardentia-session-compose-mode-map
+  :doc "Keymap for `ardentia-session-compose-mode'."
+  "C-c C-c" #'ardentia-session-compose-send
+  "C-c C-k" #'ardentia-session-compose-abort)
+
+(define-derived-mode ardentia-session-compose-mode text-mode "Ardentia-Say"
+  "Mode of the buffer in which a message to a running session is written.
+
+\\{ardentia-session-compose-mode-map}"
+  (setq header-line-format
+        " Message to the running session: C-c C-c send, C-c C-k abort"))
+
+(defun ardentia-session-compose ()
+  "Write a message and send it into the running session of this buffer."
+  (interactive)
+  (unless (and ardentia-session--file (derived-mode-p 'ardentia-session-mode))
+    (user-error "Not an ardentia transcript buffer"))
+  (let ((src (current-buffer))
+        (conf (current-window-configuration))
+        (buf (generate-new-buffer "*ardentia-say*")))
+    (with-current-buffer buf
+      (ardentia-session-compose-mode)
+      (setq ardentia-session-compose--buffer src
+            ardentia-session-compose--windows conf))
+    (pop-to-buffer buf)))
+
+(defun ardentia-session-compose-abort ()
+  "Discard the message and close the compose buffer."
+  (interactive)
+  (let ((conf ardentia-session-compose--windows))
+    (kill-buffer (current-buffer))
+    (when conf (set-window-configuration conf))
+    (message "Aborted")))
+
+(defun ardentia-session-compose-send ()
+  "Send the message of this buffer into the session and close the buffer."
+  (interactive)
+  (let ((src ardentia-session-compose--buffer)
+        (conf ardentia-session-compose--windows)
+        (text (buffer-substring-no-properties (point-min) (point-max))))
+    (unless (buffer-live-p src) (user-error "The transcript buffer is gone"))
+    (ardentia-session-send
+     (file-name-base (buffer-local-value 'ardentia-session--file src)) text)
+    (kill-buffer (current-buffer))
+    (when conf (set-window-configuration conf))
+    (with-current-buffer src
+      (setq ardentia-session--input t)
+      (unless ardentia-session--follow (ardentia-session-toggle-follow))
+      (ardentia-session--poll)
+      (ardentia-session--ensure-timer))
+    (message "Sent")))
 
 ;;;; agent-shell (optional)
 
@@ -582,6 +690,18 @@ another process."
           (agent-shell-session-restore-verbosity
            ardentia-session-agent-shell-verbosity))
       (agent-shell-resume-session id))))
+
+(defun ardentia-session-attach (task)
+  "Join the running session of TASK, or resume it in `agent-shell'.
+When the session accepts live input, open its transcript buffer in the
+current window, ready for `i'; no second process is started.  Otherwise
+say why and fall back to `ardentia-session-open-agent-shell'."
+  (interactive (list (ardentia--current-task)))
+  (let* ((file (ardentia-session--require-file task)))
+    (if (ardentia-session--live-p (file-name-base file))
+        (ardentia-session-open task t)
+      (message "Session does not accept live input (finished, other computer or older run); resuming in agent-shell")
+      (ardentia-session-open-agent-shell task))))
 
 (defun ardentia-session-agent-shell-here ()
   "Open the task of this transcript buffer in `agent-shell'."

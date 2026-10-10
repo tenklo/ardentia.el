@@ -258,9 +258,15 @@ Other queues signal a `user-error'; `t' shows their last transcript."
   (ardentia-session-open (ardentia-dashboard--require-task)))
 
 (defun ardentia-dashboard-agent-shell ()
-  "Open the latest session of the task at point in agent-shell."
+  "Open the latest session of the task at point.
+A running task whose session accepts live input opens in the current
+window, ready for sending messages into it; anything else is resumed
+in agent-shell."
   (interactive)
-  (ardentia-session-open-agent-shell (ardentia-dashboard--require-task)))
+  (let ((task (ardentia-dashboard--require-task)))
+    (if (eq (plist-get task :queue) 'running)
+        (ardentia-session-attach task)
+      (ardentia-session-open-agent-shell task))))
 
 (defun ardentia-dashboard-toggle-later ()
   "Hide or show ready tasks that are not yet due in this dashboard buffer."

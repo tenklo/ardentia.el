@@ -98,7 +98,8 @@ while `ardentia-mode-line-mode` is on.
 `g` refresh (asynchronous), `RET` open (review buffer for a review task,
 session transcript for a running task, an error for other queues),
 `t` session transcript of the task in any queue (the latest run),
-`A` the latest session in `agent-shell`, `o` visit the heading,
+`A` join the running session (see Session transcripts) or, for other tasks,
+resume the latest session in `agent-shell`, `o` visit the heading,
 `,` set the priority (SPC removes it), `+`/`-` (also `S-<up>`/`S-<down>`)
 raise/lower it (ready and later tasks only),
 `a` accept, `s` send back, `l` hide or show later tasks, `x` run the ready
@@ -159,7 +160,18 @@ buffer is no longer polled, `g` reads it again. The timer exists only while a
 buffer needs it.
 
 Keys: `g` re-read from scratch, `f` toggle following, `o` visit the
-heading, `a` open in `agent-shell`, `q` quit.
+heading, `i` send a message into the running session, `a` open in
+`agent-shell`, `q` quit.
+
+Live input: the runner can keep an input pipe open per orchestrator, fed by
+`ardentia-session-say-command` (default `ai/tools/aiready-say`;
+`--check SESSION` exits 0 when the session accepts input, otherwise the
+message on stdin is sent). `A` on a running task checks that; if the session
+is live, its transcript buffer opens in the current window with `input: i`
+in the header line, and no second process is started. Otherwise a message
+says why and `A` resumes the session in `agent-shell` as before. `i` opens a
+compose buffer (`C-c C-c` send, `C-c C-k` abort); the message arrives inside
+the running turn and shows up in the transcript, which is followed.
 
 `agent-shell` is an optional third-party package, not a dependency.
 `ardentia-session-open-agent-shell` needs it installed (otherwise it
@@ -181,6 +193,7 @@ viewer RET uses on a running task.
 `ardentia-timer-unit`, `ardentia-service-unit`,
 `ardentia-run-task-command`,
 `ardentia-session-directory`, `ardentia-session-viewer`,
+`ardentia-session-say-command`,
 `ardentia-session-agent-shell-verbosity`,
 `ardentia-session-follow-interval`, `ardentia-session-result-lines`,
 `ardentia-session-line-width`, `ardentia-session-idle-seconds`,
