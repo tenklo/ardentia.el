@@ -40,6 +40,7 @@
 (require 'ardentia-core)
 (require 'ardentia-actions)
 (require 'ardentia-review)
+(require 'ardentia-session)
 (require 'ardentia-dashboard)
 (require 'ardentia-capture)
 (require 'ardentia-modeline)

@@ -37,6 +37,7 @@
 (require 'ardentia-core)
 (require 'ardentia-actions)
 (require 'ardentia-review)
+(require 'ardentia-session)
 
 (declare-function ardentia "ardentia" ())
 
@@ -94,7 +95,9 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
 (defvar-keymap ardentia-dashboard-mode-map
   :doc "Keymap for `ardentia-dashboard-mode'."
   "g" #'ardentia-dashboard-refresh
-  "RET" #'ardentia-dashboard-review
+  "RET" #'ardentia-dashboard-enter
+  "t" #'ardentia-dashboard-transcript
+  "A" #'ardentia-dashboard-agent-shell
   "o" #'ardentia-dashboard-visit
   "a" #'ardentia-dashboard-accept
   "s" #'ardentia-dashboard-send-back
@@ -187,6 +190,28 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
   "Open the review buffer of the task at point."
   (interactive)
   (ardentia-review-task (ardentia-dashboard--require-task t)))
+
+;;;###autoload
+(defun ardentia-dashboard-enter ()
+  "Open the task at point: review buffer, or session viewer when running.
+Other queues signal a `user-error'; `t' shows their last transcript."
+  (interactive)
+  (let ((task (ardentia-dashboard--require-task)))
+    (pcase (plist-get task :queue)
+      ('review (ardentia-review-task task))
+      ('running (ardentia-session-open-viewer task))
+      (_ (user-error
+          "Task is neither waiting for review nor running (t: last transcript)")))))
+
+(defun ardentia-dashboard-transcript ()
+  "Open the latest session transcript of the task at point, in any queue."
+  (interactive)
+  (ardentia-session-open (ardentia-dashboard--require-task)))
+
+(defun ardentia-dashboard-agent-shell ()
+  "Open the latest session of the task at point in agent-shell."
+  (interactive)
+  (ardentia-session-open-agent-shell (ardentia-dashboard--require-task)))
 
 (defun ardentia-dashboard-toggle-later ()
   "Hide or show ready tasks that are not yet due in this dashboard buffer."

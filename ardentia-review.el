@@ -39,6 +39,7 @@
 (require 'subr-x)
 (require 'ardentia-core)
 (require 'ardentia-actions)
+(require 'ardentia-session)
 
 (declare-function ardentia-dashboard-refresh-all "ardentia-dashboard" ())
 
@@ -230,6 +231,7 @@ Return a plist; signal a `user-error' when the heading is missing."
   "s" #'ardentia-review-send-back
   "y" #'ardentia-review-yourself
   "o" #'ardentia-review-visit
+  "t" #'ardentia-review-transcript
   "g" #'ardentia-review-render
   "q" #'quit-window
   "?" #'ardentia)
@@ -291,6 +293,11 @@ Return a plist; signal a `user-error' when the heading is missing."
   "Visit the heading of this review buffer's task in its org file."
   (interactive)
   (ardentia-visit-task ardentia-review--task))
+
+(defun ardentia-review-transcript ()
+  "Open the session transcript of this review buffer's task."
+  (interactive)
+  (ardentia-session-open ardentia-review--task))
 
 (defun ardentia-review-yourself ()
   "Let the agents do an open child TODO of this task themselves.

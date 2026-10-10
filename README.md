@@ -7,7 +7,7 @@ ardentia shows these queues, lets you review, accept or send back results
 and creates new agent tasks.
 
 Requirements: Emacs 30 or 31, Org 9.7 (built in), `transient` (built in).
-No other Emacs packages.
+No other Emacs packages; `agent-shell` is optional (see Session transcripts).
 
 License: GPL-3.0-or-later, see `LICENSE`.
 
@@ -73,13 +73,18 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-dashboard`     | All queues in `*ardentia*`: review, running, ready, later |
 | `ardentia-review-inbox`  | Same view, only tasks waiting for review             |
 | `ardentia-review-task`   | Read-only org view of one task (run report, notes, child sections) |
+| `ardentia-session-open` | Read-only, live-following transcript of the agent session of a task |
+| `ardentia-session-open-agent-shell` | Resume that session in `agent-shell` (optional package) |
 | `ardentia-new-task`      | Capture a new `:aiready:` task (asks for the host)   |
 | `ardentia-delegate`      | Same, quoting the active region as data              |
 | `ardentia-mode-line-mode`| Global minor mode with the review counter            |
 
 ### Keys in the dashboard
 
-`g` refresh (asynchronous), `RET` open review, `o` visit the heading,
+`g` refresh (asynchronous), `RET` open (review buffer for a review task,
+session transcript for a running task, an error for other queues),
+`t` session transcript of the task in any queue (the latest run),
+`A` the latest session in `agent-shell`, `o` visit the heading,
 `a` accept, `s` send back, `l` hide or show later tasks, `q` quit, `?` menu.
 
 Queue `later`: the runner only picks up an `:aiready:` task once its
@@ -97,8 +102,51 @@ later tasks are listed; `l` toggles it in the current buffer.
 ### Keys in the review buffer
 
 `a` accept, `s` send back (asks for a note), `y` let the agents do an open
-child TODO themselves, `o` visit the heading, `g` re-render, `q` quit.
+child TODO themselves, `o` visit the heading, `t` session transcript,
+`g` re-render, `q` quit.
 The buffer uses `org-indent-mode`; set `ardentia-review-indent` to nil to turn that off.
+
+### Session transcripts
+
+The runner starts one Claude Code session per task with the org directory
+as working directory. Claude Code writes its transcript live to
+`~/.claude/projects/SLUG/SESSION.jsonl`, where SLUG is the truename of
+that directory with every character other than letters and digits
+replaced by `-` (`/path/to/org` becomes `-path-to-org`). ardentia
+finds the transcript of a task as the newest `*.jsonl` there whose first
+16 KB contain `ID=<org id of the task>` (the prompt the runner sends).
+For a running task only files modified after its `AI_CLAIMED` time
+(minus 5 minutes) count.
+
+`ardentia-session-mode` renders it as text: local time, prompts,
+assistant text, tool calls as `> Bash: description`, tool results cut to
+a few lines (`< ...`), failed results as `! ...` in the error face.
+Subagent transcripts (`SESSION/subagents/agent-*.jsonl`) are merged in by
+time stamp and prefixed with their type, for example `[qa]`; new ones
+are picked up while following.
+
+The buffer follows like `tail -f` every `ardentia-session-follow-interval`
+seconds: only new bytes are read, a partial last line waits for the next
+poll, and point stays at the end if it was there. The header line says
+`following`, `not following` or `finished`. A session is finished when
+the last refresh of the dashboard does not list the task as running, or
+when the transcript was not written for `ardentia-session-idle-seconds`;
+a finished buffer is no longer polled. The timer exists only while a
+buffer needs it.
+
+Keys: `g` re-read from scratch, `f` toggle following, `o` visit the
+heading, `a` open in `agent-shell`, `q` quit.
+
+`agent-shell` is an optional third-party package, not a dependency.
+`ardentia-session-open-agent-shell` needs it installed (otherwise it
+signals a `user-error`), calls `agent-shell-resume-session` with the
+session id and the org directory as `default-directory`, and binds
+`agent-shell-session-restore-verbosity` to
+`ardentia-session-agent-shell-verbosity` (default `full`: the whole
+conversation is replayed). That starts a new agent process on the
+session, so it asks for confirmation when the task is still running.
+`ardentia-session-viewer` (`ardentia` or `agent-shell`) chooses which
+viewer RET uses on a running task.
 
 ## Customization
 
@@ -106,7 +154,12 @@ The buffer uses `org-indent-mode`; set `ardentia-review-indent` to nil to turn t
 `ardentia-hosts-file`, `ardentia-capture-file`,
 `ardentia-mode-line-interval`, `ardentia-process-timeout`,
 `ardentia-stale-minutes`, `ardentia-dashboard-show-later`,
-`ardentia-timer-unit`, `ardentia-service-unit`.
+`ardentia-timer-unit`, `ardentia-service-unit`,
+`ardentia-session-directory`, `ardentia-session-viewer`,
+`ardentia-session-agent-shell-verbosity`,
+`ardentia-session-follow-interval`, `ardentia-session-result-lines`,
+`ardentia-session-line-width`, `ardentia-session-idle-seconds`,
+`ardentia-session-search-limit`.
 
 ## Design rules
 
@@ -132,6 +185,7 @@ The buffer uses `org-indent-mode`; set `ardentia-review-indent` to nil to turn t
 - `ardentia-core.el` parsing, queue logic, async fetch, shared state
 - `ardentia-actions.el` mutations in the visiting buffer
 - `ardentia-review.el` review buffer
+- `ardentia-session.el` session transcript viewer, optional agent-shell
 - `ardentia-dashboard.el` dashboard and review inbox
 - `ardentia-capture.el` new task and delegate
 - `ardentia-modeline.el` mode-line counter

@@ -867,5 +867,399 @@ Text
           (should-not (plist-get ardentia--state :refreshing)))
       (delete-directory dir t))))
 
+;;;; Session transcripts
+
+(defvar agent-shell-session-restore-verbosity)
+
+(defconst ardentia-test--sid-1 "session-one")
+(defconst ardentia-test--sid-2 "session-two")
+(defconst ardentia-test--sid-3 "session-three")
+
+(defun ardentia-test--json-line (rec)
+  "Return REC (an alist) as one JSON line."
+  (concat (json-serialize rec) "\n"))
+
+(defun ardentia-test--write (file text &optional append mtime)
+  "Write TEXT to FILE (append with APPEND); set MTIME (a time) if given."
+  (make-directory (file-name-directory file) t)
+  (let ((coding-system-for-write 'utf-8))
+    (write-region text nil file append 'silent))
+  (when mtime (set-file-times file mtime)))
+
+(defun ardentia-test--prompt-rec (id &optional ts)
+  "Return the first user record of a session for the task ID."
+  `((type . "user") (timestamp . ,(or ts "2026-10-10T10:00:00.000Z"))
+    (message . ((role . "user")
+                (content . ,(format "Process aiready task FILE=/o/x.org ID=%s" id))))))
+
+(defun ardentia-test--assistant-rec (ts &rest blocks)
+  "Return an assistant record at TS with content BLOCKS."
+  `((type . "assistant") (timestamp . ,ts)
+    (message . ((role . "assistant") (content . ,(vconcat blocks))))))
+
+(defun ardentia-test--result-rec (ts content &optional err)
+  "Return a user record at TS holding a tool result with CONTENT."
+  `((type . "user") (timestamp . ,ts)
+    (message . ((role . "user")
+                (content . [((type . "tool_result") (tool_use_id . "toolu_1")
+                             (is_error . ,(if err t :false))
+                             (content . ,content))])))))
+
+(defmacro ardentia-test--with-sessions (dir &rest body)
+  "Run BODY with DIR a temporary transcript directory."
+  (declare (indent 1))
+  `(let* ((,dir (make-temp-file "ardentia-sess-" t))
+          (ardentia-session-directory ,dir)
+          (ardentia--state nil)
+          (message-log-max nil))
+     (unwind-protect (progn ,@body)
+       (dolist (b (ardentia-session--live-buffers)) (kill-buffer b))
+       (ardentia-session--cancel-timer)
+       (delete-directory ,dir t))))
+
+(ert-deftest ardentia-test-session-slug ()
+  (should (equal (ardentia-session--slug "/nonexistent-xyz/my.org dir/")
+                 "-nonexistent-xyz-my-org-dir"))
+  (let* ((real (make-temp-file "ardentia-real-" t))
+         (link (concat real "-link")))
+    (unwind-protect
+        (progn
+          (make-symbolic-link real link)
+          (should (equal (ardentia-session--slug link)
+                         (ardentia-session--slug real))))
+      (delete-file link)
+      (delete-directory real t))))
+
+(ert-deftest ardentia-test-session-directory-derived ()
+  (let ((ardentia-session-directory nil)
+        (ardentia-org-directory "/nonexistent-xyz/org/"))
+    (should (equal (ardentia-session--dir)
+                   (expand-file-name "-nonexistent-xyz-org"
+                                     "~/.claude/projects/")))))
+
+(ert-deftest ardentia-test-session-find ()
+  (ardentia-test--with-sessions dir
+    (let* ((now (current-time))
+           (old (time-subtract now 3600))
+           (a (expand-file-name (concat ardentia-test--sid-1 ".jsonl") dir))
+           (b (expand-file-name (concat ardentia-test--sid-2 ".jsonl") dir))
+           (c (expand-file-name (concat ardentia-test--sid-3 ".jsonl") dir))
+           (task (list :id "id-1" :title "T" :file "/o/x.org")))
+      (ardentia-test--write a (ardentia-test--json-line (ardentia-test--prompt-rec "id-1")) nil old)
+      (ardentia-test--write b (ardentia-test--json-line (ardentia-test--prompt-rec "id-1")) nil now)
+      (ardentia-test--write c (ardentia-test--json-line (ardentia-test--prompt-rec "id-10")) nil now)
+      ;; Newest wins; the other task's session (id-10) is not a match.
+      (should (equal (ardentia-session-find task) b))
+      (should (equal (ardentia-session-find (list :id "id-10")) c))
+      (should-not (ardentia-session-find (list :id "id-2")))
+      (should-not (ardentia-session-find (list :title "no id")))
+      ;; Running: only files newer than AI_CLAIMED minus 5 minutes.
+      (let* ((claimed (format-time-string "%Y%m%d-%H%M" (time-subtract now 600)))
+             (running (list :id "id-1" :queue 'running
+                            :props `(("AI_CLAIMED" . ,claimed)))))
+        (should (equal (ardentia-session-find running) b))
+        (delete-file b)
+        (should-not (ardentia-session-find running))
+        (should (equal (ardentia-session-find task) a))))))
+
+(ert-deftest ardentia-test-session-render-records ()
+  (let ((ardentia-session-result-lines 2))
+    (let ((s (ardentia-session--render-record
+              (ardentia-test--prompt-rec "id-1" "2026-10-10T10:00:00.000Z") "")))
+      (should (string-match-p "\\`[0-9:-]\\{8\\} Prompt: Process aiready task" s)))
+    (let ((s (ardentia-session--render-record
+              (ardentia-test--assistant-rec
+               "2026-10-10T10:00:01.000Z"
+               '((type . "thinking") (thinking . ""))
+               '((type . "text") (text . "Hello\nworld"))
+               '((type . "tool_use") (id . "toolu_1") (name . "Bash")
+                 (input . ((command . "ls -l\necho  hi") (description . "List files"))))
+               '((type . "tool_use") (id . "toolu_2") (name . "Agent")
+                 (input . ((description . "Check it") (subagent_type . "qa")
+                           (prompt . "Do it")))))
+              "")))
+      (should (string-match-p "Hello\n +world" s))
+      (should (string-match-p "^[0-9:-]+ > Bash: List files$" s))
+      (should (string-match-p "> Agent (qa): Check it" s))
+      (should-not (string-match-p "thinking" s)))
+    ;; Without description the command is used, on one line.
+    (should (string-match-p
+             "> Bash: ls -l echo hi"
+             (ardentia-session--render-record
+              (ardentia-test--assistant-rec
+               "2026-10-10T10:00:01.000Z"
+               '((type . "tool_use") (name . "Bash")
+                 (input . ((command . "ls -l\necho  hi")))))
+              "")))
+    ;; Results: truncated, errors get the error face.
+    (let ((s (ardentia-session--render-record
+              (ardentia-test--result-rec "2026-10-10T10:00:02.000Z" "a\nb\nc\nd") "")))
+      (should (string-match-p "< a\n +b\n +\\.\\.\\. (2 more lines)" s))
+      (should-not (string-match-p "c" (substring s 8))))
+    (let ((s (ardentia-session--render-record
+              (ardentia-test--result-rec "2026-10-10T10:00:02.000Z"
+                                         [((type . "text") (text . "boom"))] t)
+              "[qa]")))
+      (should (string-match-p "\\[qa\\] ! boom" s))
+      (should (eq (get-text-property (string-search "boom" s) 'face s)
+                  'ardentia-session-error)))
+    ;; Unknown kinds show nothing and never signal.
+    (dolist (rec `(((type . "attachment") (timestamp . "2026-10-10T10:00:00Z"))
+                   ((type . "queue-operation") (content . "x"))
+                   ((type . 5))
+                   ((type . "assistant") (message . ((content . 7))))
+                   ((type . "user") (timestamp . "garbage")
+                    (message . ((content . [5 "x" ((type . "tool_result"))]))))))
+      (ardentia-session--render-record rec ""))
+    (should-not (ardentia-session--render-record
+                 '((type . "attachment")) ""))))
+
+(ert-deftest ardentia-test-session-read-new-partial-and-malformed ()
+  (ardentia-test--with-sessions dir
+    (let ((f (expand-file-name "s.jsonl" dir))
+          (l1 (ardentia-test--json-line (ardentia-test--prompt-rec "id-1"))))
+      (ardentia-test--write f (concat l1 "{not json\n[1,2]\n{\"type\":\"user\""))
+      (let ((res (ardentia-session--read-new f 0)))
+        (should (= (length (car res)) 1))
+        (should (= (cdr res) (+ (string-bytes l1) (length "{not json\n[1,2]\n"))))
+        ;; Complete the partial line: it shows up now, exactly once.
+        (ardentia-test--write f "}\n" t)
+        (let ((res2 (ardentia-session--read-new f (cdr res))))
+          (should (= (length (car res2)) 1))
+          (should (equal (alist-get 'type (car (car res2))) "user"))
+          (should (equal (ardentia-session--read-new f (cdr res2))
+                         (cons nil (cdr res2)))))))))
+
+(ert-deftest ardentia-test-session-read-new-multibyte ()
+  (ardentia-test--with-sessions dir
+    (let ((f (expand-file-name "s.jsonl" dir)))
+      (ardentia-test--write
+       f (ardentia-test--json-line
+          (ardentia-test--assistant-rec "2026-10-10T10:00:01.000Z"
+                                        '((type . "text") (text . "Grüße ✓")))))
+      (let ((res (ardentia-session--read-new f 0)))
+        (should (string-match-p
+                 "Grüße ✓"
+                 (ardentia-session--render-record (car (car res)) "")))))))
+
+(ert-deftest ardentia-test-session-buffer-incremental ()
+  (ardentia-test--with-sessions dir
+    (let* ((f (expand-file-name (concat ardentia-test--sid-1 ".jsonl") dir))
+           (task (list :id "id-1" :title "Fake task" :file "/o/x.org" :queue 'running
+                       :props nil))
+           (ardentia-session-follow-interval 1000))
+      (ardentia-test--write
+       f (concat (ardentia-test--json-line (ardentia-test--prompt-rec "id-1"))
+                 (ardentia-test--json-line
+                  (ardentia-test--assistant-rec
+                   "2026-10-10T10:00:01.000Z" '((type . "text") (text . "first step"))))))
+      (let ((buf (ardentia-session-open task)))
+        (with-current-buffer buf
+          (should (derived-mode-p 'ardentia-session-mode))
+          (should buffer-read-only)
+          (should (string-match-p "first step" (buffer-string)))
+          (should (string-match-p "following" (ardentia-session--header)))
+          (should (string-match-p "Fake task" (ardentia-session--header)))
+          (should (timerp ardentia-session--timer))
+          (should (= (point) (point-max)))
+          (ardentia-test--write
+           f (ardentia-test--json-line
+              (ardentia-test--assistant-rec
+               "2026-10-10T10:00:02.000Z" '((type . "text") (text . "second step"))))
+           t)
+          (ardentia-session--poll)
+          (ardentia-session--poll)
+          (should (= (length (split-string (buffer-string) "second step")) 2))
+          (should (= (length (split-string (buffer-string) "first step")) 2))
+          (should (= (point) (point-max)))
+          ;; Point not at the end stays where it is.
+          (goto-char (point-min))
+          (ardentia-test--write
+           f (ardentia-test--json-line
+              (ardentia-test--assistant-rec
+               "2026-10-10T10:00:03.000Z" '((type . "text") (text . "third step"))))
+           t)
+          (ardentia-session--poll)
+          (should (= (point) (point-min)))
+          (should (string-match-p "third step" (buffer-string)))
+          ;; g re-reads from scratch without duplicating.
+          (ardentia-session-reread)
+          (should (= (length (split-string (buffer-string) "second step")) 2)))
+        (kill-buffer buf)
+        (should-not ardentia-session--timer)))))
+
+(ert-deftest ardentia-test-session-finished-detection ()
+  (ardentia-test--with-sessions dir
+    (let* ((f (expand-file-name (concat ardentia-test--sid-1 ".jsonl") dir))
+           (running (list :id "id-1" :title "T" :file "/o/x.org" :queue 'running))
+           (ardentia-session-follow-interval 1000))
+      (ardentia-test--write f (ardentia-test--json-line (ardentia-test--prompt-rec "id-1")))
+      ;; No refresh yet: the queue of the task decides, a fresh file is live.
+      (let ((buf (ardentia-session-open running)))
+        (with-current-buffer buf
+          (should-not ardentia-session--finished)
+          ;; The task left the running queue on the last refresh.
+          (let ((ardentia--state (list :time (current-time) :tasks nil)))
+            (ardentia-session--poll)
+            (should ardentia-session--finished)
+            (should (string-match-p "finished" (ardentia-session--header)))
+            (should-not (ardentia-session--wanted-p buf)))))
+      ;; An old file is finished even if listed as running.
+      (set-file-times f (time-subtract (current-time) 3600))
+      (let ((ardentia--state (list :time (current-time) :tasks (list running))))
+        (let ((buf (ardentia-session-open running)))
+          (should (buffer-local-value 'ardentia-session--finished buf))
+          (should-not (buffer-local-value 'ardentia-session--follow buf))))
+      ;; A review task shows the transcript, finished, without a timer.
+      (ardentia-session--cancel-timer)
+      (ardentia-test--write f "" t (current-time))
+      (let ((buf (ardentia-session-open (list :id "id-1" :title "R" :queue 'review))))
+        (should (buffer-local-value 'ardentia-session--finished buf))
+        (should-not ardentia-session--timer)))))
+
+(ert-deftest ardentia-test-session-subagents ()
+  (ardentia-test--with-sessions dir
+    (let* ((f (expand-file-name (concat ardentia-test--sid-1 ".jsonl") dir))
+           (sub (expand-file-name (concat ardentia-test--sid-1 "/subagents") dir))
+           (a (expand-file-name "agent-abc123.jsonl" sub))
+           (task (list :id "id-1" :title "T" :file "/o/x.org" :queue 'running))
+           (ardentia-session-follow-interval 1000))
+      (ardentia-test--write
+       f (concat (ardentia-test--json-line (ardentia-test--prompt-rec "id-1"))
+                 (ardentia-test--json-line
+                  (ardentia-test--assistant-rec
+                   "2026-10-10T10:00:01.000Z" '((type . "text") (text . "main one"))))))
+      (let ((buf (ardentia-session-open task)))
+        (with-current-buffer buf
+          (should-not (string-match-p "\\[qa\\]" (buffer-string)))
+          ;; A subagent appears later and sorts by time stamp.
+          (ardentia-test--write
+           (concat (file-name-sans-extension a) ".meta.json")
+           "{\"agentType\":\"qa\",\"description\":\"Re-QA\",\"toolUseId\":\"toolu_1\"}")
+          (ardentia-test--write
+           a (ardentia-test--json-line
+              (ardentia-test--assistant-rec
+               "2026-10-10T10:00:03.000Z" '((type . "text") (text . "sub work")))))
+          (ardentia-test--write
+           f (ardentia-test--json-line
+              (ardentia-test--assistant-rec
+               "2026-10-10T10:00:04.000Z" '((type . "text") (text . "main two"))))
+           t)
+          (ardentia-session--poll)
+          (let ((text (buffer-string)))
+            (should (string-match-p "\\[qa\\] sub work" text))
+            (should (< (string-search "main one" text)
+                       (string-search "sub work" text)
+                       (string-search "main two" text))))
+          ;; Subagent without meta file gets a generic prefix.
+          (ardentia-test--write
+           (expand-file-name "agent-def456.jsonl" sub)
+           (ardentia-test--json-line
+            (ardentia-test--assistant-rec
+             "2026-10-10T10:00:05.000Z" '((type . "text") (text . "other")))))
+          (ardentia-session--poll)
+          (should (string-match-p "\\[agent\\] other" (buffer-string))))))))
+
+(ert-deftest ardentia-test-session-no-transcript ()
+  (ardentia-test--with-sessions dir
+    (should (file-directory-p dir))
+    (should-error (ardentia-session-open (list :id "id-9" :title "T"))
+                  :type 'user-error)))
+
+(ert-deftest ardentia-test-session-agent-shell-optional ()
+  (ardentia-test--with-sessions dir
+    (ardentia-test--write
+     (expand-file-name (concat ardentia-test--sid-1 ".jsonl") dir)
+     (ardentia-test--json-line (ardentia-test--prompt-rec "id-1")))
+    (let ((task (list :id "id-1" :title "T" :queue 'review))
+          (org (make-temp-file "ardentia-org-" t))
+          calls)
+      (unwind-protect
+          (let ((ardentia-org-directory org))
+            ;; Not installed: a clear user-error.
+            (cl-letf (((symbol-function 'require)
+                       (lambda (feature &rest _) (not (eq feature 'agent-shell)))))
+              (should-error (ardentia-session-open-agent-shell task)
+                            :type 'user-error))
+            ;; Installed (faked): session id, directory and verbosity are passed.
+            (cl-letf (((symbol-function 'require) (lambda (&rest _) t))
+                      ((symbol-function 'agent-shell-resume-session)
+                       (lambda (id) (push (list id default-directory
+                                                agent-shell-session-restore-verbosity)
+                                          calls)))
+                      ((symbol-function 'yes-or-no-p)
+                       (lambda (&rest _) (error "Must not ask for a finished task"))))
+              (ardentia-session-open-agent-shell task)
+              (should (equal calls
+                             (list (list ardentia-test--sid-1
+                                         (file-name-as-directory (file-truename org))
+                                         'full))))
+              ;; Running: asks, and a "no" cancels.
+              (setq calls nil)
+              (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil)))
+                (should-error (ardentia-session-open-agent-shell
+                               (list :id "id-1" :title "T" :queue 'running))
+                              :type 'user-error))
+              (should-not calls)
+              (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+                (ardentia-session-open-agent-shell
+                 (list :id "id-1" :title "T" :queue 'running))
+                (should (= (length calls) 1)))))
+        (delete-directory org t)))))
+
+(ert-deftest ardentia-test-session-viewer-choice ()
+  (let (called)
+    (cl-letf (((symbol-function 'ardentia-session-open)
+               (lambda (_) (push 'builtin called)))
+              ((symbol-function 'ardentia-session-open-agent-shell)
+               (lambda (_) (push 'shell called))))
+      (let ((ardentia-session-viewer 'ardentia))
+        (ardentia-session-open-viewer '(:id "x")))
+      (let ((ardentia-session-viewer 'agent-shell))
+        (ardentia-session-open-viewer '(:id "x"))))
+    (should (equal called '(shell builtin)))))
+
+(ert-deftest ardentia-test-dashboard-enter-dispatch ()
+  (let ((buf (get-buffer-create " *ardentia-test-enter*"))
+        (tasks (list (ardentia-test--task :queue 'review :id "r")
+                     (ardentia-test--task :queue 'running :id "u")
+                     (ardentia-test--task :queue 'ready :id "y")))
+        (ardentia--state nil)
+        calls)
+    (unwind-protect
+        (with-current-buffer buf
+          (ardentia-dashboard-mode)
+          (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
+                     (lambda () (car tasks)))
+                    ((symbol-function 'ardentia-review-task)
+                     (lambda (tk) (push (list 'review (plist-get tk :id)) calls)))
+                    ((symbol-function 'ardentia-session-open-viewer)
+                     (lambda (tk) (push (list 'viewer (plist-get tk :id)) calls)))
+                    ((symbol-function 'ardentia-session-open)
+                     (lambda (tk) (push (list 'session (plist-get tk :id)) calls)))
+                    ((symbol-function 'ardentia-session-open-agent-shell)
+                     (lambda (tk) (push (list 'shell (plist-get tk :id)) calls))))
+            (dolist (tk tasks)
+              (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
+                         (lambda () tk)))
+                (if (eq (plist-get tk :queue) 'ready)
+                    (should-error (ardentia-dashboard-enter) :type 'user-error)
+                  (ardentia-dashboard-enter))
+                (ardentia-dashboard-transcript)
+                (ardentia-dashboard-agent-shell)))
+            (should (equal (reverse calls)
+                           '((review "r") (session "r") (shell "r")
+                             (viewer "u") (session "u") (shell "u")
+                             (session "y") (shell "y"))))
+            (should (eq (lookup-key ardentia-dashboard-mode-map (kbd "RET"))
+                        #'ardentia-dashboard-enter))
+            (should (eq (lookup-key ardentia-dashboard-mode-map "t")
+                        #'ardentia-dashboard-transcript))
+            (should (eq (lookup-key ardentia-dashboard-mode-map "A")
+                        #'ardentia-dashboard-agent-shell))
+            (should (eq (lookup-key ardentia-review-mode-map "t")
+                        #'ardentia-review-transcript))))
+      (kill-buffer buf))))
+
 (provide 'ardentia-test)
 ;;; ardentia-test.el ends here
