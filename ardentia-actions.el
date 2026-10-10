@@ -162,6 +162,14 @@ Replace humanreview by aiready on the child; add NOTE (may be empty)."
      (ardentia--swap-tag "humanreview" "aiready")
      (ardentia--insert-log-note note))))
 
+(defun ardentia-set-priority-1 (file id action)
+  "Change the priority of the ready task ID in FILE according to ACTION.
+ACTION is what `org-priority' accepts: a character, `up', `down',
+`remove' or `set' (prompt)."
+  (ardentia--call-on-heading
+   file id nil "aiready"
+   (lambda () (org-priority action))))
+
 ;;;; Interactive commands
 
 (defun ardentia-accept (task)

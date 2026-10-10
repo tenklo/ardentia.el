@@ -104,6 +104,11 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
   "s" #'ardentia-dashboard-send-back
   "l" #'ardentia-dashboard-toggle-later
   "x" #'ardentia-dashboard-run
+  "," #'ardentia-dashboard-priority
+  "+" #'ardentia-dashboard-priority-up
+  "S-<up>" #'ardentia-dashboard-priority-up
+  "-" #'ardentia-dashboard-priority-down
+  "S-<down>" #'ardentia-dashboard-priority-down
   "q" #'quit-window
   "?" #'ardentia)
 
@@ -187,6 +192,48 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
     (when (and review (not (eq (plist-get task :queue) 'review)))
       (user-error "Task is not waiting for review"))
     task))
+
+(defvar org-priority-highest)
+(defvar org-priority-lowest)
+
+(defun ardentia-dashboard--require-ready-task ()
+  "Return the task at point; require the ready queue (later included)."
+  (let ((task (ardentia-dashboard--require-task)))
+    (unless (eq (plist-get task :queue) 'ready)
+      (user-error "Priority can only be changed on ready or later tasks"))
+    task))
+
+(defun ardentia-dashboard--set-priority (action)
+  "Apply priority ACTION to the ready task at point.
+The asynchronous refresh re-renders the dashboard afterwards."
+  (let ((task (ardentia-dashboard--require-ready-task)))
+    (ardentia-set-priority-1 (plist-get task :file) (plist-get task :id)
+                             action)))
+
+(defun ardentia-dashboard-priority ()
+  "Set the priority of the ready or later task at point, like org-agenda.
+Prompt for a letter; SPC removes the cookie."
+  (interactive)
+  (ardentia-dashboard--require-ready-task)
+  (let ((c (read-char-exclusive
+            (format "Priority %c-%c, SPC to remove: "
+                    org-priority-highest org-priority-lowest))))
+    (cond ((eq c ?\s) (ardentia-dashboard--set-priority 'remove))
+          ((and (>= (upcase c) org-priority-highest)
+                (<= (upcase c) org-priority-lowest))
+           (ardentia-dashboard--set-priority (upcase c)))
+          (t (user-error "Priority must be between `%c' and `%c'"
+                         org-priority-highest org-priority-lowest)))))
+
+(defun ardentia-dashboard-priority-up ()
+  "Raise the priority of the ready or later task at point."
+  (interactive)
+  (ardentia-dashboard--set-priority 'up))
+
+(defun ardentia-dashboard-priority-down ()
+  "Lower the priority of the ready or later task at point."
+  (interactive)
+  (ardentia-dashboard--set-priority 'down))
 
 (defun ardentia-dashboard-review ()
   "Open the review buffer of the task at point."

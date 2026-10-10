@@ -1412,5 +1412,121 @@ Text
                         #'ardentia-review-transcript))))
       (kill-buffer buf))))
 
+;;;; Priority
+
+(ert-deftest ardentia-test-priority-from-json ()
+  (let ((tasks (ardentia--tasks-from-json
+                (ardentia--parse-json
+                 "[{\"file\":\"/o/a.org\",\"line\":1,\"title\":\"P\",\"priority\":\"A\",\"tags\":[\"aiready\"],\"id\":\"p1\",\"done\":false,\"properties\":{}},{\"file\":\"/o/a.org\",\"line\":2,\"title\":\"N\",\"priority\":\"null\",\"tags\":[\"aiready\"],\"id\":\"p2\",\"done\":false,\"properties\":{}}]"))))
+    (should (equal (plist-get (nth 0 tasks) :priority) "A"))
+    (should (null (plist-get (nth 1 tasks) :priority)))
+    (should (= (ardentia--task-priority (nth 0 tasks)) ?A))
+    (should (= (ardentia--task-priority (nth 1 tasks)) ?B))))
+
+(ert-deftest ardentia-test-priority-sort-ready ()
+  (let* ((now (ardentia-test--t "20261010-1200"))
+         (mk (lambda (title prio created &optional queue sched)
+               (ardentia-test--task :title title :queue (or queue 'ready)
+                                    :priority prio :created created
+                                    :scheduled sched)))
+         (tasks (list (funcall mk "c-old" "C" "20261001-0000")
+                      (funcall mk "none-new" nil "20261009-0000")
+                      (funcall mk "a-new" "A" "20261009-0000")
+                      (funcall mk "none-old" nil "20261002-0000")
+                      (funcall mk "b-mid" "B" "20261005-0000")
+                      (funcall mk "a-old" "A" "20261003-0000")
+                      (funcall mk "later-a" "A" "20261001-0000" 'ready "<2026-10-20 Tue>")
+                      (funcall mk "later-c" "C" "20261001-0000" 'ready "<2026-10-12 Mon>")
+                      (funcall mk "running-c" "C" "20261001-0000" 'running)))
+         (sorted (mapcar (lambda (x) (plist-get x :title))
+                         (ardentia--sort-tasks tasks now))))
+    ;; Ready: priority first, no cookie = B, then oldest first.  Later
+    ;; tasks keep soonest-due-first, priority does not reorder them.
+    (should (equal sorted '("running-c" "a-old" "a-new" "none-old" "b-mid"
+                            "none-new" "c-old" "later-c" "later-a")))))
+
+(ert-deftest ardentia-test-priority-default-option ()
+  (let ((ardentia-default-priority ?D)
+        (tasks (list (ardentia-test--task :title "none" :queue 'ready :created "20261001-0000")
+                     (ardentia-test--task :title "c" :queue 'ready :priority "C"
+                                          :created "20261009-0000"))))
+    (should (equal (mapcar (lambda (x) (plist-get x :title))
+                           (ardentia--sort-tasks tasks))
+                   '("c" "none")))))
+
+(ert-deftest ardentia-test-priority-title-cookie ()
+  (let ((now (ardentia-test--t "20261010-1200")))
+    (should (equal (aref (ardentia--task-row
+                          (ardentia-test--task :queue 'ready :priority "A" :title "Do it")
+                          now)
+                         7)
+                   "[#A] Do it"))
+    (should (equal (aref (ardentia--task-row
+                          (ardentia-test--task :queue 'ready :title "Plain")
+                          now)
+                         7)
+                   "Plain"))))
+
+(defconst ardentia-test--prio-org
+  "* TODO [#C] Ready one :aiready:\n:PROPERTIES:\n:ID:       prio-1\n:END:\nbody\n* TODO Review one :humanreview:\n:PROPERTIES:\n:ID:       prio-2\n:END:\n"
+  "Org text for the priority tests.")
+
+(ert-deftest ardentia-test-priority-set ()
+  (ardentia-test--with-org-file f ardentia-test--prio-org
+    (ardentia-set-priority-1 f "prio-1" ?A)
+    (should (string-match-p "^\\* TODO \\[#A\\] Ready one :aiready:$"
+                            (ardentia-test--file-text f)))
+    (should-not (buffer-modified-p (find-buffer-visiting f)))
+    (ardentia-set-priority-1 f "prio-1" 'down)
+    (should (string-match-p "^\\* TODO \\[#B\\] Ready one :aiready:$"
+                            (ardentia-test--file-text f)))
+    (ardentia-set-priority-1 f "prio-1" 'remove)
+    (should (string-match-p "^\\* TODO Ready one :aiready:$"
+                            (ardentia-test--file-text f)))
+    ;; Only :aiready: headings; the review task stays untouched.
+    (should-error (ardentia-set-priority-1 f "prio-2" ?A) :type 'user-error)
+    (should (string-match-p "^\\* TODO Review one :humanreview:$"
+                            (ardentia-test--file-text f)))))
+
+(ert-deftest ardentia-test-priority-dashboard-keys ()
+  (with-temp-buffer
+    (ardentia-dashboard-mode)
+    (should (eq (keymap-lookup ardentia-dashboard-mode-map ",")
+                #'ardentia-dashboard-priority))
+    (should (eq (keymap-lookup ardentia-dashboard-mode-map "+")
+                #'ardentia-dashboard-priority-up))
+    (should (eq (keymap-lookup ardentia-dashboard-mode-map "-")
+                #'ardentia-dashboard-priority-down))
+    (should (eq (keymap-lookup ardentia-dashboard-mode-map "S-<up>")
+                #'ardentia-dashboard-priority-up))
+    (let ((called nil))
+      (cl-letf (((symbol-function 'ardentia-set-priority-1)
+                 (lambda (&rest args) (setq called args)))
+                ((symbol-function 'read-char-exclusive) (lambda (&rest _) ?a)))
+        ;; Review and running tasks are refused before any prompt or write.
+        (dolist (queue '(review running))
+          (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
+                     (lambda (&rest _) (list :queue queue :file "/o/x.org" :id "i"))))
+            (should (equal (cadr (should-error (ardentia-dashboard-priority)
+                                               :type 'user-error))
+                           "Priority can only be changed on ready or later tasks"))
+            (should-error (ardentia-dashboard-priority-up) :type 'user-error)))
+        (should-not called)
+        (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
+                   (lambda (&rest _) (list :queue 'ready :file "/o/x.org" :id "i"))))
+          (ardentia-dashboard-priority)
+          (should (equal called '("/o/x.org" "i" ?A)))
+          (ardentia-dashboard-priority-down)
+          (should (equal called '("/o/x.org" "i" down))))
+        (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
+                   (lambda (&rest _) (list :queue 'ready :file "/o/x.org" :id "i")))
+                  ((symbol-function 'read-char-exclusive) (lambda (&rest _) ?\s)))
+          (ardentia-dashboard-priority)
+          (should (equal called '("/o/x.org" "i" remove))))
+        (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
+                   (lambda (&rest _) (list :queue 'ready :file "/o/x.org" :id "i")))
+                  ((symbol-function 'read-char-exclusive) (lambda (&rest _) ?z)))
+          (should-error (ardentia-dashboard-priority) :type 'user-error))))))
+
 (provide 'ardentia-test)
 ;;; ardentia-test.el ends here

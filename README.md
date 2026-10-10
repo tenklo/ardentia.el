@@ -90,6 +90,8 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-mode-line-mode`| Global minor mode with the review counter            |
 | `ardentia-run-task-at-point` | Org buffer: start the runner now on the `:aiready:` task at point |
 | `ardentia-dashboard-run` | Dashboard: start the runner now on the ready or later task at point |
+| `ardentia-dashboard-priority` | Dashboard: set the priority of the ready or later task at point (SPC removes it) |
+| `ardentia-dashboard-priority-up` / `-down` | Dashboard: raise or lower that priority |
 
 ### Keys in the dashboard
 
@@ -97,6 +99,8 @@ while `ardentia-mode-line-mode` is on.
 session transcript for a running task, an error for other queues),
 `t` session transcript of the task in any queue (the latest run),
 `A` the latest session in `agent-shell`, `o` visit the heading,
+`,` set the priority (SPC removes it), `+`/`-` (also `S-<up>`/`S-<down>`)
+raise/lower it (ready and later tasks only),
 `a` accept, `s` send back, `l` hide or show later tasks, `x` run the ready
 or later task now, `q` quit, `?` menu.
 
@@ -111,6 +115,12 @@ task is due from 00:00 that day; an unparseable timestamp counts as due.
 Review and running tasks, the review inbox and the mode-line counter are
 not affected. `ardentia-dashboard-show-later` (default t) sets whether
 later tasks are listed; `l` toggles it in the current buffer.
+
+Ready tasks are sorted by priority (`[#A]` first; no cookie counts as
+`ardentia-default-priority`, B), then oldest first. The Title column
+shows the cookie like org-agenda. The real order of the runner comes from
+its own order configuration, where priority is one rule after a few
+urgency rules, so the dashboard order is an approximation.
 
 ### Keys in the review buffer
 

@@ -78,6 +78,11 @@
   "Minutes after which a claimed (running) task is flagged as stale."
   :type 'integer)
 
+(defcustom ardentia-default-priority ?B
+  "Priority a task without a cookie counts as when sorting.
+Keep it equal to the default priority of the runner (B)."
+  :type 'character)
+
 (defconst ardentia--queue-tags
   '(("humanreview" . review)
     ("ai_in_progress" . running)
@@ -130,6 +135,7 @@ Return nil when the element is done."
             :level (alist-get 'level alist)
             :todo (ardentia--stringify (alist-get 'todo alist))
             :title (or (ardentia--stringify (alist-get 'title alist)) "")
+            :priority (ardentia--stringify (alist-get 'priority alist))
             :tags tags
             :id (ardentia--stringify (alist-get 'id alist))
             :scheduled (ardentia--stringify (alist-get 'scheduled alist))
@@ -293,8 +299,19 @@ Later tasks use their due time (soonest first), the others their age stamp."
       (ardentia--task-due-time task)
     (ardentia--task-stamp task)))
 
+(defun ardentia--task-priority (task)
+  "Return the priority character of TASK.
+Use the first character of its :priority, upcased; without a cookie
+return `ardentia-default-priority'."
+  (let ((p (plist-get task :priority)))
+    (if (and (stringp p) (not (string-empty-p p)))
+        (upcase (aref p 0))
+      ardentia-default-priority)))
+
 (defun ardentia--sort-tasks (tasks &optional now)
   "Return TASKS sorted by queue; inside a rank the oldest task comes first.
+Inside the ready rank, tasks are sorted by priority first (A before B),
+a task without a cookie counting as `ardentia-default-priority'.
 With NOW, ready tasks that are not yet due sort last, soonest due first."
   (let ((keyed (mapcar (lambda (task)
                          (cons task (ardentia--sort-key task now)))
@@ -305,6 +322,11 @@ With NOW, ready tasks that are not yet due sort last, soonest due first."
                     (let ((ra (ardentia--sort-rank (car a) now))
                           (rb (ardentia--sort-rank (car b) now)))
                       (cond ((/= ra rb) (< ra rb))
+                            ((and (= ra 4)
+                                  (/= (ardentia--task-priority (car a))
+                                      (ardentia--task-priority (car b))))
+                             (< (ardentia--task-priority (car a))
+                                (ardentia--task-priority (car b))))
                             ((and (cdr a) (cdr b))
                              (time-less-p (cdr a) (cdr b)))
                             (t (and (cdr a) t)))))))))
@@ -324,7 +346,10 @@ With NOW, ready tasks that are not yet due sort last, soonest due first."
           (ardentia--format-age (ardentia--task-age task now))
           (ardentia--task-flags task now)
           (file-name-nondirectory (or (plist-get task :file) ""))
-          (plist-get task :title)))
+          (let ((p (ardentia--stringify (plist-get task :priority))))
+            (if p
+                (format "[#%c] %s" (upcase (aref p 0)) (plist-get task :title))
+              (plist-get task :title)))))
 
 (defun ardentia--parse-hosts-conf (string)
   "Parse the contents STRING of aiready-hosts.conf.
