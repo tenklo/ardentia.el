@@ -86,6 +86,7 @@ while `ardentia-mode-line-mode` is on.
 
 `a` accept, `s` send back (asks for a note), `y` let the agents do an open
 child TODO themselves, `o` visit the heading, `g` re-render, `q` quit.
+The buffer uses `org-indent-mode`; set `ardentia-review-indent` to nil to turn that off.
 
 ## Customization
 

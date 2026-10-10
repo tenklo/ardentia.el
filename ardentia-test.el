@@ -398,7 +398,22 @@ Text
           (with-current-buffer buf
             (should buffer-read-only)
             (should (derived-mode-p 'ardentia-review-mode))
+            (should org-indent-mode)
+            (should (string-match-p "Latest run report" (buffer-string)))
+            ;; Re-rendering keeps the indentation on.
+            (ardentia-review-render)
+            (should org-indent-mode)
             (should (string-match-p "Latest run report" (buffer-string))))
+        (kill-buffer buf)))))
+
+(ert-deftest ardentia-test-review-buffer-no-indent ()
+  (ardentia-test--with-org-file f ardentia-test--org
+    (let (buf (ardentia-review-indent nil))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (setq buf b))))
+        (ardentia-review-task (list :file f :id "id-one" :title "Task one")))
+      (unwind-protect
+          (with-current-buffer buf
+            (should-not org-indent-mode))
         (kill-buffer buf)))))
 
 ;;;; Mutations

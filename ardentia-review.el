@@ -34,6 +34,7 @@
 ;;; Code:
 
 (require 'org)
+(require 'org-indent)
 (require 'seq)
 (require 'subr-x)
 (require 'ardentia-core)
@@ -212,6 +213,11 @@ Return a plist; signal a `user-error' when the heading is missing."
 
 ;;;; Mode
 
+(defcustom ardentia-review-indent t
+  "Whether the review buffer turns on `org-indent-mode'."
+  :type 'boolean
+  :group 'ardentia)
+
 (defvar-local ardentia-review--task nil
   "Plist (:file :id :title) of the task shown in this review buffer.")
 
@@ -233,6 +239,7 @@ Return a plist; signal a `user-error' when the heading is missing."
 
 \\{ardentia-review-mode-map}"
   (setq buffer-read-only t)
+  (when ardentia-review-indent (org-indent-mode 1))
   (setq ardentia--current-task-function (lambda () ardentia-review--task)))
 
 (declare-function ardentia "ardentia" ())
