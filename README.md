@@ -49,9 +49,11 @@ tag `NAME_only`.
   (`x`). In every element `%i` is the task's org ID and `%f` its file.
   The default uses `systemd-run --user` (a transient unit, independent
   of Emacs, output in the journal) and the runner's
-  `ORG_AIREADY_ONLY_ID`: the runner waits for a running tick, then
-  works exactly that task, also when it is scheduled for later. Any
-  command that does the same will do; nil switches the feature off.
+  `ORG_AIREADY_ONLY_ID`: the runner works exactly that task at once,
+  in parallel to a running tick if there is one, also when the task is
+  scheduled for later. A second request for the same task while it
+  runs is ignored. Any command that does the same will do; nil
+  switches the feature off.
   Running asks for confirmation, refuses tasks bound to another host,
   and in an org buffer saves the file first, because the runner reads
   it from disk.
