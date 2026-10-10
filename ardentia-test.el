@@ -161,6 +161,108 @@ Original task text
     (should (equal sorted '("blocked" "partial" "done-old" "done-new"
                             "running" "ready")))))
 
+;;;; Later (scheduled, not yet due)
+
+(defun ardentia-test--later (scheduled &optional queue)
+  "Return non-nil when a QUEUE task SCHEDULED is later at 2026-10-10 12:00."
+  (and (ardentia--task-later-p
+        (ardentia-test--task :queue (or queue 'ready) :scheduled scheduled)
+        (ardentia-test--t "20261010-1200"))
+       t))
+
+(ert-deftest ardentia-test-later-date-rules ()
+  (should (ardentia-test--later "<2026-10-12 Mon>"))
+  (should-not (ardentia-test--later "<2026-10-10 Sat>"))
+  (should-not (ardentia-test--later "<2026-10-09 Fri>"))
+  (should-not (ardentia-test--later nil))
+  (should-not (ardentia-test--later "garbage")))
+
+(ert-deftest ardentia-test-later-time-rules ()
+  (should (ardentia-test--later "<2026-10-10 Sat 18:30>"))
+  (should-not (ardentia-test--later "<2026-10-10 Sat 11:59>"))
+  (should-not (ardentia-test--later "<2026-10-10 Sat 12:00>")))
+
+(ert-deftest ardentia-test-later-range-repeater ()
+  (should (ardentia-test--later "<2026-10-10 Sat 13:00-14:00>"))
+  (should-not (ardentia-test--later "<2026-10-10 Sat 09:00-18:00>"))
+  (should (ardentia-test--later "<2026-10-10 Sat 18:30 +1w>"))
+  (should-not (ardentia-test--later "<2026-10-10 Sat +1w>"))
+  (should (ardentia-test--later "<2026-10-12 Mon +1w -2d>")))
+
+(ert-deftest ardentia-test-later-impossible-time ()
+  (should-not (ardentia-test--later "<2026-10-10 Sat 25:00>"))
+  (should-not (ardentia-test--later "<2026-10-10 Sat 12:75>"))
+  (should (ardentia-test--later "<2026-10-11 Sun 25:00>")))
+
+(ert-deftest ardentia-test-later-only-ready ()
+  (should-not (ardentia-test--later "<2026-10-12 Mon>" 'review))
+  (should-not (ardentia-test--later "<2026-10-12 Mon>" 'running)))
+
+(ert-deftest ardentia-test-later-due-time ()
+  (should (null (ardentia--task-due-time (ardentia-test--task))))
+  (should (equal (format-time-string
+                  "%F %R" (ardentia--task-due-time
+                           (ardentia-test--task :scheduled "<2026-10-12 Mon 09:00-11:00>")))
+                 "2026-10-12 09:00"))
+  (should (equal (format-time-string
+                  "%F %R" (ardentia--task-due-time
+                           (ardentia-test--task :scheduled "<2026-10-12 Mon 24:00>")))
+                 "2026-10-12 00:00")))
+
+(ert-deftest ardentia-test-later-sort ()
+  (let* ((now (ardentia-test--t "20261010-1200"))
+         (mk (lambda (title sched &optional queue)
+               (ardentia-test--task :title title :queue (or queue 'ready) :scheduled sched
+                                    :created "20200101-0000")))
+         (tasks (list (funcall mk "far" "<2026-10-20 Tue>")
+                      (funcall mk "near" "<2026-10-11 Sun 08:00>")
+                      (funcall mk "ready" nil)
+                      (funcall mk "review" "<2026-10-30 Fri>" 'review)))
+         (sorted (mapcar (lambda (x) (plist-get x :title))
+                         (ardentia--sort-tasks tasks now))))
+    (should (equal sorted '("review" "ready" "near" "far")))))
+
+(ert-deftest ardentia-test-later-flags-row ()
+  (let ((now (ardentia-test--t "20261010-1200")))
+    (should (equal (ardentia--task-flags
+                    (ardentia-test--task :queue 'ready
+                                         :scheduled "<2026-10-10 Sat 18:30>")
+                    now)
+                   "due 18:30"))
+    (should (equal (ardentia--task-flags
+                    (ardentia-test--task :queue 'ready
+                                         :scheduled "<2026-10-12 Mon 18:30>")
+                    now)
+                   "due 10-12"))
+    (should (equal (ardentia--task-flags
+                    (ardentia-test--task :queue 'ready :scheduled "<2026-10-09 Fri>")
+                    now)
+                   ""))
+    (let ((row (ardentia--task-row
+                (ardentia-test--task :queue 'ready :scheduled "<2026-10-12 Mon>")
+                now)))
+      (should (equal (aref row 0) "later"))
+      (should (equal (aref row 5) "due 10-12")))
+    (should (equal (ardentia--queue-name
+                    (ardentia-test--task :queue 'review :scheduled "<2026-10-12 Mon>")
+                    now)
+                   "review"))))
+
+(ert-deftest ardentia-test-later-toggle-filter ()
+  (let* ((now (ardentia-test--t "20261010-1200"))
+         (tasks (list (ardentia-test--task :queue 'ready :scheduled "<2026-10-12 Mon>")
+                      (ardentia-test--task :queue 'ready)
+                      (ardentia-test--task :queue 'review :scheduled "<2026-10-12 Mon>"))))
+    (should (= (length (ardentia-dashboard--entries tasks nil now)) 3))
+    (should (= (length (ardentia-dashboard--entries tasks nil now t)) 2))
+    (should (= (length (ardentia-dashboard--entries tasks 'review now t)) 1))
+    (with-temp-buffer
+      (ardentia-dashboard-mode)
+      (let ((ardentia-dashboard-show-later t))
+        (should (ardentia-dashboard--show-later-p))
+        (setq ardentia-dashboard--show-later nil)
+        (should-not (ardentia-dashboard--show-later-p))))))
+
 ;;;; Age, host, flags, rows
 
 (ert-deftest ardentia-test-format-age ()

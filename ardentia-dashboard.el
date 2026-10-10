@@ -25,7 +25,7 @@
 
 ;;; Commentary:
 
-;; `ardentia-dashboard' lists the agent queues (review, running, ready)
+;; `ardentia-dashboard' lists the agent queues (review, running, ready, later)
 ;; in a `tabulated-list-mode' buffer.  `ardentia-review-inbox' is the same
 ;; view filtered to the review queue.  Refreshing is asynchronous.
 
@@ -60,13 +60,36 @@
      (if (plist-get st :error) (format " | ERROR: %s" (plist-get st :error)) "")
      (if (plist-get st :refreshing) " | refreshing..." ""))))
 
-(defun ardentia-dashboard--entries (tasks filter now)
-  "Return `tabulated-list-entries' for TASKS restricted to queue FILTER at NOW."
+(defcustom ardentia-dashboard-show-later t
+  "Non-nil means the dashboard lists ready tasks that are not yet due.
+Those are :aiready: tasks whose SCHEDULED time still lies ahead; the
+runner leaves them alone until then.  They show up as queue \"later\".
+The key `l' toggles this per dashboard buffer."
+  :type 'boolean
+  :group 'ardentia)
+
+(defvar-local ardentia-dashboard--show-later 'default
+  "Buffer-local override of `ardentia-dashboard-show-later'.
+The symbol `default' means: use the option.")
+
+(defun ardentia-dashboard--show-later-p ()
+  "Return non-nil when this buffer shows later tasks."
+  (if (eq ardentia-dashboard--show-later 'default)
+      ardentia-dashboard-show-later
+    ardentia-dashboard--show-later))
+
+(defun ardentia-dashboard--entries (tasks filter now &optional hide-later)
+  "Return `tabulated-list-entries' for TASKS restricted to queue FILTER at NOW.
+With HIDE-LATER, ready tasks that are not yet due are left out."
   (mapcar (lambda (task) (list task (ardentia--task-row task now)))
           (ardentia--sort-tasks
-           (seq-filter (lambda (tk) (or (null filter)
-                                        (eq (plist-get tk :queue) filter)))
-                       tasks))))
+           (seq-filter (lambda (tk)
+                         (and (or (null filter)
+                                  (eq (plist-get tk :queue) filter))
+                              (not (and hide-later
+                                        (ardentia--task-later-p tk now)))))
+                       tasks)
+           now)))
 
 (defvar-keymap ardentia-dashboard-mode-map
   :doc "Keymap for `ardentia-dashboard-mode'."
@@ -75,6 +98,7 @@
   "o" #'ardentia-dashboard-visit
   "a" #'ardentia-dashboard-accept
   "s" #'ardentia-dashboard-send-back
+  "l" #'ardentia-dashboard-toggle-later
   "q" #'quit-window
   "?" #'ardentia)
 
@@ -103,7 +127,8 @@
   (setq tabulated-list-entries
         (ardentia-dashboard--entries (plist-get ardentia--state :tasks)
                                      ardentia-dashboard--filter
-                                     (current-time)))
+                                     (current-time)
+                                     (not (ardentia-dashboard--show-later-p))))
   (tabulated-list-print t)
   (force-mode-line-update))
 
@@ -162,6 +187,15 @@
   "Open the review buffer of the task at point."
   (interactive)
   (ardentia-review-task (ardentia-dashboard--require-task t)))
+
+(defun ardentia-dashboard-toggle-later ()
+  "Hide or show ready tasks that are not yet due in this dashboard buffer."
+  (interactive)
+  (setq ardentia-dashboard--show-later
+        (not (ardentia-dashboard--show-later-p)))
+  (ardentia-dashboard--render)
+  (message "Later tasks: %s"
+           (if (ardentia-dashboard--show-later-p) "shown" "hidden")))
 
 (defun ardentia-dashboard-visit ()
   "Visit the heading of the task at point in its org file."

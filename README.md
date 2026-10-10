@@ -70,7 +70,7 @@ while `ardentia-mode-line-mode` is on.
 | Command                  | What it does                                         |
 |--------------------------|------------------------------------------------------|
 | `ardentia`               | Transient menu (d r n D g m)                         |
-| `ardentia-dashboard`     | All queues in `*ardentia*`: review, running, ready   |
+| `ardentia-dashboard`     | All queues in `*ardentia*`: review, running, ready, later |
 | `ardentia-review-inbox`  | Same view, only tasks waiting for review             |
 | `ardentia-review-task`   | Read-only org view of one task (run report, notes, child sections) |
 | `ardentia-new-task`      | Capture a new `:aiready:` task (asks for the host)   |
@@ -80,7 +80,19 @@ while `ardentia-mode-line-mode` is on.
 ### Keys in the dashboard
 
 `g` refresh (asynchronous), `RET` open review, `o` visit the heading,
-`a` accept, `s` send back, `q` quit, `?` menu.
+`a` accept, `s` send back, `l` hide or show later tasks, `q` quit, `?` menu.
+
+Queue `later`: the runner only picks up an `:aiready:` task once its
+SCHEDULED time is due, so a ready task scheduled in the future is listed
+as `later` instead of `ready`. It sorts after the ready tasks, soonest
+due first, and the Flags column shows `due HH:MM` (due today) or
+`due MM-DD`. Only the date and the first `HH:MM` after it count (the
+start of a range; repeater and warning period are ignored). Without a
+time, or with an impossible one (hour above 23, minute above 59), the
+task is due from 00:00 that day; an unparseable timestamp counts as due.
+Review and running tasks, the review inbox and the mode-line counter are
+not affected. `ardentia-dashboard-show-later` (default t) sets whether
+later tasks are listed; `l` toggles it in the current buffer.
 
 ### Keys in the review buffer
 
@@ -93,7 +105,7 @@ The buffer uses `org-indent-mode`; set `ardentia-review-indent` to nil to turn t
 `ardentia-org-directory`, `ardentia-org-tool`, `ardentia-host-command`,
 `ardentia-hosts-file`, `ardentia-capture-file`,
 `ardentia-mode-line-interval`, `ardentia-process-timeout`,
-`ardentia-stale-minutes`,
+`ardentia-stale-minutes`, `ardentia-dashboard-show-later`,
 `ardentia-timer-unit`, `ardentia-service-unit`.
 
 ## Design rules

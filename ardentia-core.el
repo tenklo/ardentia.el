@@ -218,9 +218,49 @@ creation time."
           ((>= (string-to-number a) 3) (concat a "!"))
           (t a))))
 
+(defun ardentia--task-due-time (task)
+  "Return the time from which the runner picks up TASK, or nil.
+Mirrors the runner's eligibility rule on the raw `:scheduled' string.
+Only the date and the first HH:MM after it count (range start; repeater
+and warning period are ignored).  No time or an impossible time (hour >
+23, minute > 59) means due from 00:00 of that day.  Nil means no
+SCHEDULED or one that cannot be parsed: due at once."
+  (let ((s (ardentia--val (plist-get task :scheduled))))
+    (when (and (stringp s)
+               (string-match
+                "\\([0-9]\\{4\\}\\)-\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)"
+                s))
+      (let ((year (string-to-number (match-string 1 s)))
+            (month (string-to-number (match-string 2 s)))
+            (day (string-to-number (match-string 3 s)))
+            (rest (substring s (match-end 0)))
+            (hour 0) (minute 0))
+        (when (string-match "\\([0-9]\\{1,2\\}\\):\\([0-9]\\{2\\}\\)" rest)
+          (let ((h (string-to-number (match-string 1 rest)))
+                (m (string-to-number (match-string 2 rest))))
+            (when (and (< h 24) (< m 60))
+              (setq hour h minute m))))
+        (encode-time (list 0 minute hour day month year nil -1 nil))))))
+
+(defun ardentia--task-later-p (task now)
+  "Return non-nil when TASK is ready but not yet due at time NOW.
+Only tasks of the ready queue can be later."
+  (and (eq (plist-get task :queue) 'ready)
+       (let ((due (ardentia--task-due-time task)))
+         (and due (time-less-p now due)))))
+
+(defun ardentia--later-flag (task now)
+  "Return \"due HH:MM\" or \"due MM-DD\" for the later TASK at time NOW."
+  (let ((due (ardentia--task-due-time task)))
+    (if (string= (format-time-string "%F" due) (format-time-string "%F" now))
+        (format-time-string "due %H:%M" due)
+      (format-time-string "due %m-%d" due))))
+
 (defun ardentia--task-flags (task now)
   "Return the flags column value of TASK at time NOW."
   (let (flags)
+    (when (ardentia--task-later-p task now)
+      (push (ardentia--later-flag task now) flags))
     (when (ardentia--task-prop task "AI_LIMIT_INTERRUPTED")
       (push "limit" flags))
     (when (eq (plist-get task :queue) 'running)
@@ -229,38 +269,55 @@ creation time."
           (push "stale?" flags))))
     (string-join (nreverse flags) " ")))
 
-(defun ardentia--sort-rank (task)
-  "Return the sort rank of TASK: review (blocked, partial, rest), running, ready."
-  (pcase (plist-get task :queue)
+(defun ardentia--effective-queue (task &optional now)
+  "Return the queue symbol of TASK for display; ready becomes `later'.
+A ready task is later when NOW is given and the task is not yet due."
+  (let ((queue (plist-get task :queue)))
+    (if (and now (ardentia--task-later-p task now)) 'later queue)))
+
+(defun ardentia--sort-rank (task &optional now)
+  "Return the sort rank of TASK: review (blocked, partial, rest), running,
+ready, later.  A ready task counts as later only when NOW is given."
+  (pcase (ardentia--effective-queue task now)
     ('review (pcase (ardentia--task-prop task "AI_STATUS")
                ("blocked" 0) ("partial" 1) (_ 2)))
     ('running 3)
     ('ready 4)
-    (_ 5)))
+    ('later 5)
+    (_ 6)))
 
-(defun ardentia--sort-tasks (tasks)
-  "Return TASKS sorted by queue; inside a rank the oldest task comes first."
+(defun ardentia--sort-key (task now)
+  "Return the time TASK is sorted by inside its rank, or nil.
+Later tasks use their due time (soonest first), the others their age stamp."
+  (if (and now (ardentia--task-later-p task now))
+      (ardentia--task-due-time task)
+    (ardentia--task-stamp task)))
+
+(defun ardentia--sort-tasks (tasks &optional now)
+  "Return TASKS sorted by queue; inside a rank the oldest task comes first.
+With NOW, ready tasks that are not yet due sort last, soonest due first."
   (let ((keyed (mapcar (lambda (task)
-                         (cons task (ardentia--task-stamp task)))
+                         (cons task (ardentia--sort-key task now)))
                        tasks)))
     (mapcar #'car
             (sort keyed
                   (lambda (a b)
-                    (let ((ra (ardentia--sort-rank (car a)))
-                          (rb (ardentia--sort-rank (car b))))
+                    (let ((ra (ardentia--sort-rank (car a) now))
+                          (rb (ardentia--sort-rank (car b) now)))
                       (cond ((/= ra rb) (< ra rb))
                             ((and (cdr a) (cdr b))
                              (time-less-p (cdr a) (cdr b)))
                             (t (and (cdr a) t)))))))))
 
-(defun ardentia--queue-name (task)
-  "Return the queue column value of TASK."
-  (pcase (plist-get task :queue)
-    ('review "review") ('running "running") ('ready "ready") (_ "")))
+(defun ardentia--queue-name (task &optional now)
+  "Return the queue column value of TASK; \"later\" when not yet due at NOW."
+  (pcase (ardentia--effective-queue task now)
+    ('review "review") ('running "running") ('ready "ready")
+    ('later "later") (_ "")))
 
 (defun ardentia--task-row (task now)
   "Return the dashboard row vector for TASK at time NOW."
-  (vector (ardentia--queue-name task)
+  (vector (ardentia--queue-name task now)
           (or (ardentia--task-prop task "AI_STATUS") "")
           (ardentia--task-host task)
           (ardentia--task-attempts task)
