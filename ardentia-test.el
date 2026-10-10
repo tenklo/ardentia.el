@@ -1827,6 +1827,20 @@ otherwise.  It logs the arguments, and the stdin text of a send."
      (with-temp-buffer (ardentia-dashboard-mode))
      (should (eq first ardentia-dashboard--refresh-timer)))))
 
+(ert-deftest ardentia-test-auto-refresh-reopen-starts-timer ()
+  "Opening an existing dashboard buffer starts a missing timer."
+  (ardentia-test--with-timer-sandbox
+   (let ((buf (get-buffer-create " *ardentia-test-reopen*")))
+     (unwind-protect
+         (cl-letf (((symbol-function 'pop-to-buffer-same-window) #'ignore)
+                   ((symbol-function 'ardentia-dashboard-refresh-all) #'ignore))
+           (with-current-buffer buf (ardentia-dashboard-mode))
+           (cancel-timer ardentia-dashboard--refresh-timer)
+           (setq ardentia-dashboard--refresh-timer nil)
+           (ardentia-dashboard--open " *ardentia-test-reopen*" nil)
+           (should (timerp ardentia-dashboard--refresh-timer)))
+       (kill-buffer buf)))))
+
 (ert-deftest ardentia-test-auto-refresh-disabled ()
   (dolist (val '(nil 0))
     (ardentia-test--with-timer-sandbox

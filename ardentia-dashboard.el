@@ -227,6 +227,9 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
         (ardentia-dashboard-mode))
       (setq ardentia-dashboard--filter filter)
       (ardentia-dashboard--render))
+    ;; The mode only starts the timer for a new buffer; a buried one, or a
+    ;; buffer that predates loading this code, gets it here.
+    (ardentia-dashboard--refresh-timer-start)
     (pop-to-buffer-same-window buf)
     (ardentia-dashboard-refresh-all)))
 
