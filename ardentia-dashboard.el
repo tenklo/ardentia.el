@@ -208,7 +208,8 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
 The asynchronous refresh re-renders the dashboard afterwards."
   (let ((task (ardentia-dashboard--require-ready-task)))
     (ardentia-set-priority-1 (plist-get task :file) (plist-get task :id)
-                             action)))
+                             action (plist-get task :line)
+                             (plist-get task :title))))
 
 (defun ardentia-dashboard-priority ()
   "Set the priority of the ready or later task at point, like org-agenda.

@@ -80,8 +80,45 @@ child must have a TODO keyword that is not a done state."
     (unless found (goto-char parent))
     found))
 
-(defun ardentia--call-on-heading (file id child-title tag fn)
+(defun ardentia--goto-heading (id line title)
+  "Move to the heading of a task in the current, wide buffer.
+With ID, go to the heading with that ID or signal a `user-error'.
+Without an ID (a freshly captured task has none yet) use LINE, accepted
+only when the heading there has exactly TITLE; otherwise use the unique
+heading with exactly TITLE.  Never settle on a heading with another
+title: zero or several matches signal a `user-error' asking to refresh."
+  (let ((id (ardentia--val id)))
+    (if id
+        (or (ardentia--goto-id id)
+            (user-error "Heading with ID %s not found in %s" id
+                        (or buffer-file-name (buffer-name))))
+      (unless (and (stringp title) (not (string-empty-p title)))
+        (user-error "Task has neither an ID nor a title -- refresh the dashboard (g)"))
+      (let (found)
+        (when (and (integerp line) (> line 0))
+          (goto-char (point-min))
+          (forward-line (1- line))
+          (when (and (org-at-heading-p)
+                     (equal (org-get-heading t t t t) title))
+            (setq found (point))))
+        (unless found
+          (let (matches)
+            (goto-char (point-min))
+            (while (re-search-forward org-heading-regexp nil t)
+              (when (equal (org-get-heading t t t t) title)
+                (push (line-beginning-position) matches)))
+            (unless (= (length matches) 1)
+              (user-error "%s heading \"%s\" in %s -- refresh the dashboard (g)"
+                          (if matches "Several headings titled" "No heading titled")
+                          title (file-name-nondirectory
+                                 (or buffer-file-name (buffer-name)))))
+            (setq found (car matches))))
+        (goto-char found)))))
+
+(defun ardentia--call-on-heading (file id child-title tag fn &optional line title)
   "Call FN at the heading with ID in FILE, in its visiting buffer.
+Without an ID, LINE and TITLE locate the heading, see
+`ardentia--goto-heading'.
 With CHILD-TITLE, FN runs at the open TODO child of that name instead.
 The heading must carry TAG.  Save the buffer afterwards when it was
 unmodified before; refresh the dashboards."
@@ -89,8 +126,7 @@ unmodified before; refresh the dashboards."
          (was-modified (buffer-modified-p buf)))
     (with-current-buffer buf
       (org-with-wide-buffer
-       (unless (ardentia--goto-id id)
-         (user-error "Heading with ID %s not found in %s" id file))
+       (ardentia--goto-heading id line title)
        (when child-title
          (unless (ardentia--find-child child-title tag)
            (user-error "%s" ardentia--changed-message)))
@@ -162,13 +198,15 @@ Replace humanreview by aiready on the child; add NOTE (may be empty)."
      (ardentia--swap-tag "humanreview" "aiready")
      (ardentia--insert-log-note note))))
 
-(defun ardentia-set-priority-1 (file id action)
+(defun ardentia-set-priority-1 (file id action &optional line title)
   "Change the priority of the ready task ID in FILE according to ACTION.
 ACTION is what `org-priority' accepts: a character, `up', `down',
-`remove' or `set' (prompt)."
+`remove' or `set' (prompt).  A task without ID is found by LINE and
+TITLE, see `ardentia--goto-heading'."
   (ardentia--call-on-heading
    file id nil "aiready"
-   (lambda () (org-priority action))))
+   (lambda () (org-priority action))
+   line title))
 
 ;;;; Interactive commands
 

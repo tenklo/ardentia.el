@@ -133,12 +133,34 @@ when declined."
   (ardentia-run--require-command)
   (unless (eq (plist-get task :queue) 'ready)
     (user-error "Task is not waiting for the agents (:aiready:)"))
-  (unless (ardentia--val (plist-get task :id))
-    (user-error "Task has no ID"))
   (ardentia-run--check-host (plist-get task :tags))
   (when (y-or-n-p (format "Run \"%s\" now? " (plist-get task :title)))
-    (ardentia-run-task-1 (plist-get task :file) (plist-get task :id)
-                         (plist-get task :title))))
+    (let ((id (ardentia--val (plist-get task :id))))
+      (if id
+          (ardentia-run-task-1 (plist-get task :file) id
+                               (plist-get task :title))
+        ;; Freshly captured: no ID yet.  Create it in the buffer.
+        (let ((buf (ardentia--task-buffer (plist-get task :file))))
+          (with-current-buffer buf
+            (org-with-wide-buffer
+             (ardentia--goto-heading nil (plist-get task :line)
+                                     (plist-get task :title))
+             (ardentia--require-tag "aiready")
+             (ardentia-run--start-here (plist-get task :title)))))))))
+
+(defun ardentia-run--start-here (title)
+  "Start the runner on the heading at point, titled TITLE.
+Create a missing ID.  The runner reads the file from disk, so a buffer
+with unsaved changes is saved first after asking, and again after the
+ID was created.  Return the process."
+  (when (buffer-modified-p)
+    (unless (y-or-n-p (format "Save %s first (the runner reads the file from disk)? "
+                              (file-name-nondirectory buffer-file-name)))
+      (user-error "Cancelled"))
+    (save-buffer))
+  (let ((id (org-id-get-create)))
+    (when (buffer-modified-p) (save-buffer))
+    (ardentia-run-task-1 buffer-file-name id title)))
 
 ;;;###autoload
 (defun ardentia-run-task-at-point ()
@@ -160,14 +182,7 @@ after asking.  A missing ID is created."
     (let ((title (org-get-heading t t t t)))
       (unless (y-or-n-p (format "Run \"%s\" now? " title))
         (user-error "Cancelled"))
-      (when (buffer-modified-p)
-        (unless (y-or-n-p (format "Save %s first (the runner reads the file from disk)? "
-                                  (file-name-nondirectory buffer-file-name)))
-          (user-error "Cancelled"))
-        (save-buffer))
-      (let ((id (org-id-get-create)))
-        (when (buffer-modified-p) (save-buffer))
-        (ardentia-run-task-1 buffer-file-name id title)))))
+      (ardentia-run--start-here title))))
 
 (provide 'ardentia-run)
 ;;; ardentia-run.el ends here

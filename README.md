@@ -102,6 +102,9 @@ session transcript for a running task, an error for other queues),
 resume the latest session in `agent-shell`, `o` visit the heading,
 `,` set the priority (SPC removes it), `+`/`-` (also `S-<up>`/`S-<down>`)
 raise/lower it (ready and later tasks only),
+(also on freshly captured tasks that have no `:ID:` yet: the heading is
+found by its line or, failing that, by its unique title; `x` creates the
+ID and saves the file first),
 `a` accept, `s` send back, `l` hide or show later tasks, `x` run the ready
 or later task now, `q` quit, `?` menu.
 

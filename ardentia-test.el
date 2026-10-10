@@ -785,11 +785,7 @@ Text
                    (plist-put (copy-sequence ardentia-test--ready-task)
                               :tags '("aiready" "other_only")))
                   :type 'user-error)))
-        (should (equal (cadr err) "Task belongs to host other")))
-      (should-error (ardentia-run-task
-                     (plist-put (copy-sequence ardentia-test--ready-task)
-                                :id "null"))
-                    :type 'user-error))
+        (should (equal (cadr err) "Task belongs to host other"))))
     (let ((ardentia-run-task-command nil))
       (should-error (ardentia-run-task ardentia-test--ready-task)
                     :type 'user-error))))
@@ -1663,18 +1659,111 @@ otherwise.  It logs the arguments, and the stdin text of a send."
         (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
                    (lambda (&rest _) (list :queue 'ready :file "/o/x.org" :id "i"))))
           (ardentia-dashboard-priority)
-          (should (equal called '("/o/x.org" "i" ?A)))
+          (should (equal called '("/o/x.org" "i" ?A nil nil)))
           (ardentia-dashboard-priority-down)
-          (should (equal called '("/o/x.org" "i" down))))
+          (should (equal called '("/o/x.org" "i" down nil nil))))
         (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
                    (lambda (&rest _) (list :queue 'ready :file "/o/x.org" :id "i")))
                   ((symbol-function 'read-char-exclusive) (lambda (&rest _) ?\s)))
           (ardentia-dashboard-priority)
-          (should (equal called '("/o/x.org" "i" remove))))
+          (should (equal called '("/o/x.org" "i" remove nil nil))))
         (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
                    (lambda (&rest _) (list :queue 'ready :file "/o/x.org" :id "i")))
                   ((symbol-function 'read-char-exclusive) (lambda (&rest _) ?z)))
           (should-error (ardentia-dashboard-priority) :type 'user-error))))))
+
+;;;; Tasks without an ID (just captured, the runner adds IDs later)
+
+(defconst ardentia-test--noid-org
+  "* TODO [#C] First :aiready:\n* TODO Second :aiready:\nbody\n"
+  "Org text of two ready headings without ID.")
+
+(ert-deftest ardentia-test-priority-no-id-by-line ()
+  (ardentia-test--with-org-file f ardentia-test--noid-org
+    (ardentia-set-priority-1 f nil ?A 2 "Second")
+    (should (equal (ardentia-test--file-text f)
+                   "* TODO [#C] First :aiready:\n* TODO [#A] Second :aiready:\nbody\n"))
+    (should-not (buffer-modified-p (find-buffer-visiting f)))
+    ;; The "null" string of the JSON counts as no ID, too.
+    (ardentia-set-priority-1 f nil 'remove 2 "Second")
+    (should (string-match-p "^\\* TODO Second :aiready:$"
+                            (ardentia-test--file-text f)))))
+
+(ert-deftest ardentia-test-priority-no-id-title-fallback ()
+  (ardentia-test--with-org-file f ardentia-test--noid-org
+    ;; Line 1 holds another heading: fall back to the unique title.
+    (ardentia-set-priority-1 f nil ?B 1 "Second")
+    (should (equal (ardentia-test--file-text f)
+                   "* TODO [#C] First :aiready:\n* TODO [#B] Second :aiready:\nbody\n"))
+    ;; A stale line past the end works the same.
+    (ardentia-set-priority-1 f nil ?A 99 "First")
+    (should (string-match-p "^\\* TODO \\[#A\\] First :aiready:$"
+                            (ardentia-test--file-text f)))))
+
+(ert-deftest ardentia-test-priority-no-id-ambiguous-or-missing ()
+  (dolist (case '(("* TODO Same :aiready:\n* TODO Same :aiready:\n" 2 "Other")
+                  ("* TODO Same :aiready:\n* TODO Same :aiready:\n" 3 "Same")
+                  ("* TODO A :aiready:\n" 1 "Gone")))
+    (ardentia-test--with-org-file f (car case)
+      (should-error (ardentia-set-priority-1 f nil ?A (nth 1 case) (nth 2 case))
+                    :type 'user-error)
+      (should (equal (ardentia-test--file-text f) (car case)))
+      (should-not (buffer-modified-p (find-buffer-visiting f))))))
+
+(ert-deftest ardentia-test-priority-no-id-line-picks-among-duplicates ()
+  ;; Two headings share the title; the line says which one is meant.
+  (ardentia-test--with-org-file f "* TODO Same :aiready:\n* TODO Same :aiready:\n"
+    (ardentia-set-priority-1 f nil ?A 2 "Same")
+    (should (equal (ardentia-test--file-text f)
+                   "* TODO Same :aiready:\n* TODO [#A] Same :aiready:\n"))))
+
+(ert-deftest ardentia-test-priority-no-id-needs-aiready-tag ()
+  (ardentia-test--with-org-file f "* TODO Review :humanreview:\n"
+    (should-error (ardentia-set-priority-1 f nil ?A 1 "Review")
+                  :type 'user-error)
+    (should (equal (ardentia-test--file-text f) "* TODO Review :humanreview:\n"))))
+
+(ert-deftest ardentia-test-priority-dashboard-passes-line-and-title ()
+  (let (called)
+    (cl-letf (((symbol-function 'ardentia-set-priority-1)
+               (lambda (&rest args) (setq called args)))
+              ((symbol-function 'ardentia-dashboard--task-at-point)
+               (lambda (&rest _)
+                 (list :queue 'ready :file "/o/x.org" :id nil :line 7
+                       :title "Fresh"))))
+      (ardentia-dashboard--set-priority 'up)
+      (should (equal called '("/o/x.org" nil up 7 "Fresh"))))))
+
+(ert-deftest ardentia-test-run-no-id-creates-id-and-saves ()
+  (ardentia-test--with-org-file f "* TODO Other\n* TODO Go :aiready:\nbody\n"
+    (let ((ardentia-run-task-command '("true")) (ardentia--local-host nil)
+          got)
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                ((symbol-function 'ardentia-run-task-1)
+                 (lambda (file id title) (setq got (list file id title)))))
+        ;; Stale line: the title fallback finds the heading.
+        (ardentia-run-task (list :queue 'ready :title "Go" :file f :id nil
+                                 :line 1 :tags '("aiready"))))
+      (let ((text (ardentia-test--file-text f)))
+        (should (string-match "^:ID: +\\([-0-9a-f]+\\)$" text))
+        (should (equal (nth 0 got) f))
+        (should (equal (nth 1 got) (match-string 1 text)))
+        (should (equal (nth 2 got) "Go"))
+        (should (string-match-p "\\* TODO Go :aiready:\n:PROPERTIES:" text)))
+      (should-not (buffer-modified-p (find-buffer-visiting f))))))
+
+(ert-deftest ardentia-test-run-no-id-ambiguous-leaves-file ()
+  (let ((text "* TODO Go :aiready:\n* TODO Go :aiready:\n"))
+    (ardentia-test--with-org-file f text
+      (let ((ardentia-run-task-command '("true")) (ardentia--local-host nil))
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                  ((symbol-function 'ardentia-run-task-1)
+                   (lambda (&rest _) (ert-fail "must not run"))))
+          (should-error (ardentia-run-task
+                         (list :queue 'ready :title "Go" :file f :id nil
+                               :line 5 :tags '("aiready")))
+                        :type 'user-error)))
+      (should (equal (ardentia-test--file-text f) text)))))
 
 (provide 'ardentia-test)
 ;;; ardentia-test.el ends here
