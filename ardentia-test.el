@@ -1156,6 +1156,32 @@ Text
     (should-not (ardentia-session--render-record
                  '((type . "attachment")) ""))))
 
+(ert-deftest ardentia-test-session-queued-command ()
+  "A message sent into a running turn shows once, as a prompt."
+  (let* ((file (make-temp-file "ardentia-queued" nil ".jsonl"))
+         (msg "Second message injected: reply with just INJECTED2."))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert
+             "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-10-10T21:22:17.558Z\",\"sessionId\":\"s-1\",\"content\":\"" msg "\"}\n"
+             "{\"parentUuid\":\"u-0\",\"isSidechain\":false,\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"" msg "\",\"source_uuid\":\"u-1\",\"delivery_id\":\"d-1\",\"commandMode\":\"prompt\",\"timestamp\":\"2026-10-10T21:22:17.558Z\"},\"type\":\"attachment\",\"uuid\":\"u-2\"}\n"
+             "{\"type\":\"queue-operation\",\"operation\":\"remove\",\"timestamp\":\"2026-10-10T21:22:18.000Z\",\"sessionId\":\"s-1\",\"content\":\"" msg "\",\"reason\":\"absorbed_mid_turn\"}\n"))
+          (let* ((recs (car (ardentia-session--read-new file 0)))
+                 (texts (delq nil (mapcar (lambda (r)
+                                            (ardentia-session--render-record r ""))
+                                          recs)))
+                 (all (apply #'concat texts)))
+            (should (= 3 (length recs)))
+            (should (= 1 (length texts)))
+            (should (string-match-p "\\`[0-9:-]\\{8\\} Prompt: Second message" all))
+            (should (eq 'ardentia-session-prompt
+                        (get-text-property (string-match "Second" all) 'face all)))
+            (should (= 1 (with-temp-buffer
+                           (insert all)
+                           (how-many "INJECTED2" (point-min) (point-max)))))))
+      (delete-file file))))
+
 (ert-deftest ardentia-test-session-read-new-partial-and-malformed ()
   (ardentia-test--with-sessions dir
     (let ((f (expand-file-name "s.jsonl" dir))

@@ -145,6 +145,8 @@ For a running task only files modified after its `AI_CLAIMED` time
 `ardentia-session-mode` renders it as text: local time, prompts,
 assistant text, tool calls as `> Bash: description`, tool results cut to
 a few lines (`< ...`), failed results as `! ...` in the error face.
+Messages you send into a running turn show up as prompts where the model
+received them.
 Subagent transcripts (`SESSION/subagents/agent-*.jsonl`) are merged in by
 time stamp and prefixed with their type, for example `[qa]`; new ones
 are picked up while following.

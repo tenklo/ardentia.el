@@ -281,7 +281,10 @@ FACE the face of the text."
 PREFIX is the subagent prefix (a string, possibly empty)."
   (condition-case nil
       (let* ((type (alist-get 'type rec))
-             (time (ardentia-session--time (alist-get 'timestamp rec)))
+             (att (and (equal type "attachment") (alist-get 'attachment rec)))
+             (time (ardentia-session--time
+                    (or (alist-get 'timestamp rec)
+                        (and (consp att) (alist-get 'timestamp att)))))
              (content (let ((c (alist-get 'content (alist-get 'message rec))))
                         (if (vectorp c) (append c nil) c)))
              (out nil)
@@ -289,6 +292,15 @@ PREFIX is the subagent prefix (a string, possibly empty)."
                      (push (ardentia-session--entry time prefix marker text face)
                            out))))
         (cond
+         ;; A message sent into a running turn arrives as an attachment, not
+         ;; as a user entry; the queue-operation entries around it are ignored.
+         ((equal type "attachment")
+          (when (and (consp att)
+                     (equal (alist-get 'type att) "queued_command")
+                     (stringp (alist-get 'prompt att)))
+            (funcall emit "Prompt: "
+                     (ardentia-session--limit-lines (alist-get 'prompt att))
+                     'ardentia-session-prompt)))
          ((equal type "user")
           (if (stringp content)
               (funcall emit "Prompt: " (ardentia-session--limit-lines content)
