@@ -1765,5 +1765,115 @@ otherwise.  It logs the arguments, and the stdin text of a send."
                         :type 'user-error)))
       (should (equal (ardentia-test--file-text f) text)))))
 
+;;;; Dashboard auto-refresh
+
+(defmacro ardentia-test--with-timer-sandbox (&rest body)
+  "Run BODY with no auto-refresh timer, and clean up whatever it creates."
+  `(let ((ardentia-dashboard--refresh-timer nil)
+         (ardentia-dashboard-refresh-interval 60))
+     (unwind-protect (progn ,@body)
+       (when (timerp ardentia-dashboard--refresh-timer)
+         (cancel-timer ardentia-dashboard--refresh-timer)))))
+
+(defmacro ardentia-test--with-dashboard (&rest body)
+  "Run BODY with a live dashboard buffer; kill it afterwards."
+  `(let ((buf (get-buffer-create " *ardentia-test-auto*")))
+     (unwind-protect
+         (progn (with-current-buffer buf (ardentia-dashboard-mode)) ,@body)
+       (kill-buffer buf))))
+
+(defun ardentia-test--tick (visible &optional state)
+  "Run the tick with VISIBLE window result and STATE; return refresh count."
+  (let ((n 0) (ardentia--state state))
+    (cl-letf (((symbol-function 'get-buffer-window)
+               (lambda (&rest _) visible))
+              ((symbol-function 'ardentia-dashboard-refresh-all)
+               (lambda () (cl-incf n))))
+      (ardentia-dashboard--refresh-tick))
+    n))
+
+(ert-deftest ardentia-test-auto-refresh-visible ()
+  (ardentia-test--with-timer-sandbox
+   (ardentia-test--with-dashboard
+    (should (= 1 (ardentia-test--tick t)))
+    (should (= 0 (ardentia-test--tick nil))))))
+
+(ert-deftest ardentia-test-auto-refresh-skips-running ()
+  (ardentia-test--with-timer-sandbox
+   (ardentia-test--with-dashboard
+    (should (= 0 (ardentia-test--tick t '(:refreshing t)))))))
+
+(ert-deftest ardentia-test-auto-refresh-skips-minibuffer ()
+  (ardentia-test--with-timer-sandbox
+   (ardentia-test--with-dashboard
+    (cl-letf (((symbol-function 'active-minibuffer-window)
+               (lambda () (selected-window))))
+      (should (= 0 (ardentia-test--tick t)))))))
+
+(ert-deftest ardentia-test-auto-refresh-cancels-without-dashboard ()
+  (ardentia-test--with-timer-sandbox
+   (ardentia-test--with-dashboard
+    (should (timerp ardentia-dashboard--refresh-timer)))
+   (should (timerp ardentia-dashboard--refresh-timer))
+   (should (= 0 (ardentia-test--tick t)))
+   (should (null ardentia-dashboard--refresh-timer))))
+
+(ert-deftest ardentia-test-auto-refresh-single-timer ()
+  (ardentia-test--with-timer-sandbox
+   (ardentia-dashboard--refresh-timer-start)
+   (let ((first ardentia-dashboard--refresh-timer))
+     (should (timerp first))
+     (ardentia-dashboard--refresh-timer-start)
+     (with-temp-buffer (ardentia-dashboard-mode))
+     (should (eq first ardentia-dashboard--refresh-timer)))))
+
+(ert-deftest ardentia-test-auto-refresh-disabled ()
+  (dolist (val '(nil 0))
+    (ardentia-test--with-timer-sandbox
+     (let ((ardentia-dashboard-refresh-interval val))
+       (ardentia-dashboard--refresh-timer-start)
+       (should (null ardentia-dashboard--refresh-timer))))))
+
+(ert-deftest ardentia-test-auto-refresh-error-contained ()
+  (ardentia-test--with-timer-sandbox
+   (ardentia-test--with-dashboard
+    (let ((ardentia--state nil) (msg nil))
+      (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) t))
+                ((symbol-function 'ardentia-refresh)
+                 (lambda (&rest _) (error "boom")))
+                ((symbol-function 'message)
+                 (lambda (f &rest a) (setq msg (apply #'format f a)))))
+        (ardentia-dashboard--refresh-tick))
+      (should (string-match-p "boom" msg))))))
+
+(ert-deftest ardentia-test-auto-refresh-keeps-point ()
+  (ardentia-test--with-timer-sandbox
+   (let* ((ardentia--state
+           (list :tasks (ardentia--tasks-from-json
+                         (ardentia--parse-json ardentia-test--json))
+                 :host "desktop" :time (current-time)))
+          (buf (get-buffer-create " *ardentia-test-point*")))
+     (unwind-protect
+         (save-window-excursion
+           (set-window-buffer (selected-window) buf)
+           (with-current-buffer buf
+             (ardentia-dashboard-mode)
+             (ardentia-dashboard--render))
+           (set-window-point (selected-window) (with-current-buffer buf
+                                                 (goto-char (point-min))
+                                                 (forward-line 2)
+                                                 (point)))
+           (let ((title (with-current-buffer buf
+                          (plist-get (ardentia-dashboard--task-at-point) :title)))
+                 (start (window-start)))
+             (with-current-buffer buf (ardentia-dashboard--render))
+             (should (equal title
+                            (with-current-buffer buf
+                              (goto-char (window-point))
+                              (plist-get (ardentia-dashboard--task-at-point)
+                                         :title))))
+             (should (= start (window-start)))))
+       (kill-buffer buf)))))
+
 (provide 'ardentia-test)
 ;;; ardentia-test.el ends here

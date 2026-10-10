@@ -70,6 +70,32 @@ The key `l' toggles this per dashboard buffer."
   :type 'boolean
   :group 'ardentia)
 
+(defvar ardentia-dashboard--refresh-timer nil
+  "The one global timer that refreshes visible dashboards, or nil.")
+
+(defun ardentia-dashboard--refresh-timer-restart ()
+  "Cancel the auto-refresh timer; start it again when a dashboard is live."
+  (when (timerp ardentia-dashboard--refresh-timer)
+    (cancel-timer ardentia-dashboard--refresh-timer))
+  (setq ardentia-dashboard--refresh-timer nil)
+  (when (ardentia-dashboard--live-buffers)
+    (ardentia-dashboard--refresh-timer-start)))
+
+(defcustom ardentia-dashboard-refresh-interval 60
+  "Seconds between automatic refreshes of the dashboards; nil or 0 disables.
+Only dashboards shown in a window on a visible frame are refreshed, and
+never while the minibuffer is active or a refresh is still running.  A
+refresh starts several `org-tool' processes over all org files (a few
+seconds of CPU), so nothing is spent while nobody looks.  The timer
+starts when a dashboard is opened and stops once the last one is killed."
+  :type '(choice (integer :tag "Seconds")
+                 (const :tag "Disabled" nil))
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when (timerp ardentia-dashboard--refresh-timer)
+           (ardentia-dashboard--refresh-timer-restart)))
+  :group 'ardentia)
+
 (defvar-local ardentia-dashboard--show-later 'default
   "Buffer-local override of `ardentia-dashboard-show-later'.
 The symbol `default' means: use the option.")
@@ -126,7 +152,8 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
   (setq tabulated-list-use-header-line nil)
   (tabulated-list-init-header)
   (setq header-line-format
-        '(:eval (ardentia-dashboard--info-line))))
+        '(:eval (ardentia-dashboard--info-line)))
+  (ardentia-dashboard--refresh-timer-start))
 
 (defun ardentia-dashboard--task-at-point ()
   "Return the task plist of the row at point, or nil."
@@ -157,6 +184,35 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
   "Refresh all dashboard buffers asynchronously."
   (ardentia-refresh #'ardentia-dashboard--render-all)
   (ardentia-dashboard--render-all))
+
+(defun ardentia-dashboard--visible-p ()
+  "Return non-nil when a dashboard buffer is shown on a visible frame."
+  (seq-some (lambda (b) (get-buffer-window b 'visible))
+            (ardentia-dashboard--live-buffers)))
+
+(defun ardentia-dashboard--refresh-tick ()
+  "Timer function: refresh visible dashboards; never signal an error."
+  (condition-case err
+      (cond
+       ((not (ardentia-dashboard--live-buffers))
+        (when (timerp ardentia-dashboard--refresh-timer)
+          (cancel-timer ardentia-dashboard--refresh-timer))
+        (setq ardentia-dashboard--refresh-timer nil))
+       ((plist-get ardentia--state :refreshing))
+       ((active-minibuffer-window))
+       ((ardentia-dashboard--visible-p)
+        (ardentia-dashboard-refresh-all)))
+    (error (message "ardentia: dashboard timer: %s" (error-message-string err)))))
+
+(defun ardentia-dashboard--refresh-timer-start ()
+  "Start the auto-refresh timer unless disabled or already running."
+  (when (and (integerp ardentia-dashboard-refresh-interval)
+             (> ardentia-dashboard-refresh-interval 0)
+             (not (timerp ardentia-dashboard--refresh-timer)))
+    (setq ardentia-dashboard--refresh-timer
+          (run-at-time ardentia-dashboard-refresh-interval
+                       ardentia-dashboard-refresh-interval
+                       #'ardentia-dashboard--refresh-tick))))
 
 (defun ardentia-dashboard-refresh ()
   "Refresh the dashboard asynchronously; Emacs stays responsive."

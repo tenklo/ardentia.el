@@ -97,7 +97,8 @@ while `ardentia-mode-line-mode` is on.
 
 ### Keys in the dashboard
 
-`g` refresh (asynchronous), `RET` open (review buffer for a review task,
+`g` refresh (asynchronous; visible dashboards also refresh by themselves every
+`ardentia-dashboard-refresh-interval` seconds), `RET` open (review buffer for a review task,
 session transcript for a running task, an error for other queues),
 `t` session transcript of the task in any queue (the latest run),
 `A` join the running session (see Session transcripts) or, for other tasks,
@@ -197,6 +198,10 @@ viewer RET uses on a running task.
 `ardentia-hosts-file`, `ardentia-capture-file`,
 `ardentia-mode-line-interval`, `ardentia-process-timeout`,
 `ardentia-stale-minutes`, `ardentia-dashboard-show-later`,
+`ardentia-dashboard-refresh-interval` (default 60 seconds, nil or 0 turns the
+automatic refresh off; only dashboards shown on a visible frame are refreshed,
+never while the minibuffer is active or a refresh runs; re-open the dashboard
+to restart the timer),
 `ardentia-timer-unit`, `ardentia-service-unit`,
 `ardentia-run-task-command`,
 `ardentia-session-directory`, `ardentia-session-viewer`,
