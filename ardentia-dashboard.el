@@ -28,6 +28,10 @@
 ;; `ardentia-dashboard' lists the agent queues (review, running, ready, later)
 ;; in a `tabulated-list-mode' buffer.  `ardentia-review-inbox' is the same
 ;; view filtered to the review queue.  Refreshing is asynchronous.
+;;
+;; The header line shows host, timer, refresh time and usage.  In a narrow
+;; window the timer times are shortened and what still does not fit moves
+;; into lines at the top of the buffer.
 
 ;;; Code:
 
@@ -47,23 +51,152 @@
 (defvar-local ardentia-dashboard--filter nil
   "Queue symbol this dashboard buffer is restricted to, or nil for all.")
 
-(defun ardentia-dashboard--info-line (&optional state)
-  "Return the header line text from STATE (default `ardentia--state')."
+(defun ardentia-dashboard--short-time (stamp &optional now)
+  "Shorten the systemd time STAMP to `HH:MM' or `Ddd HH:MM'.
+STAMP looks like \"Sun 2026-10-11 08:45:17 CEST\".  The date part is
+dropped when it is the local date of NOW (default: the current time).
+Anything else, including nil, is returned unchanged."
+  (if (and (stringp stamp)
+           (string-match
+            "\\`\\([A-Za-z]+\\) \\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\) \\([0-9]\\{2\\}:[0-9]\\{2\\}\\)"
+            stamp))
+      (let ((day (match-string 1 stamp))
+            (date (match-string 2 stamp))
+            (hm (match-string 3 stamp)))
+        (if (equal date (format-time-string "%F" now))
+            hm
+          (concat day " " hm)))
+    stamp))
+
+(defun ardentia-dashboard--info-segments (&optional state compact now)
+  "Return the info line from STATE as a list of strings.
+The first is \" Host: X\", every further one starts with \" | \".  With
+COMPACT the timer times are shortened (see
+`ardentia-dashboard--short-time', relative to NOW).  STATE defaults to
+`ardentia--state'."
   (let* ((st (or state ardentia--state))
          (timer (plist-get st :timer))
-         (time (plist-get st :time)))
-    (concat
-     (format " Host: %s" (or (plist-get st :host) "unknown"))
-     (format " | Timer last: %s next: %s"
-             (if st (or (plist-get timer :last) "unknown") "unknown")
-             (cond ((plist-get timer :running) "after the current run")
-                   (st (or (plist-get timer :next) "unknown"))
-                   (t "unknown")))
-     (format " | Refreshed: %s"
-             (if time (format-time-string "%H:%M:%S" time) "never"))
-     (if (plist-get st :error) (format " | ERROR: %s" (plist-get st :error)) "")
-     (if (plist-get st :refreshing) " | refreshing..." "")
-     (ardentia-usage-header-string))))
+         (time (plist-get st :time))
+         (last (if st (or (plist-get timer :last) "unknown") "unknown"))
+         (next (cond ((plist-get timer :running) "after the current run")
+                     (st (or (plist-get timer :next) "unknown"))
+                     (t "unknown")))
+         (usage (ardentia-usage-header-string)))
+    (when compact
+      (setq last (ardentia-dashboard--short-time last now)
+            next (ardentia-dashboard--short-time next now)))
+    (append
+     (list (format " Host: %s" (or (plist-get st :host) "unknown"))
+           (format " | Timer last: %s next: %s" last next)
+           (format " | Refreshed: %s"
+                   (if time (format-time-string "%H:%M:%S" time) "never")))
+     (and (plist-get st :error)
+          (list (format " | ERROR: %s" (plist-get st :error))))
+     (and (plist-get st :refreshing) (list " | refreshing..."))
+     (mapcar (lambda (part) (concat " | " part))
+             (split-string usage " | " t)))))
+
+(defun ardentia-dashboard--info-line (&optional state)
+  "Return the full header line text from STATE (default `ardentia--state')."
+  (apply #'concat (ardentia-dashboard--info-segments state)))
+
+(defun ardentia-dashboard--layout (width &optional state now)
+  "Decide how the info line fits into WIDTH columns.
+Return (HEADER-COUNT COMPACT OVERFLOW-LINES).  When the full line fits
+or WIDTH is nil, all segments go into the header line.  Otherwise the
+timer times are shortened, the header line takes as many leading
+segments as fit, and the rest is wrapped into OVERFLOW-LINES.  STATE and
+NOW are as for `ardentia-dashboard--info-segments'."
+  (let ((full (ardentia-dashboard--info-segments state nil now)))
+    (if (or (null width)
+            (<= (string-width (apply #'concat full)) width))
+        (list (length full) nil nil)
+      (let* ((segs (ardentia-dashboard--info-segments state t now))
+             (count 1)
+             (used (string-width (car segs)))
+             (rest (cdr segs))
+             lines line)
+        (while (and rest (<= (+ used (string-width (car rest))) width))
+          (setq used (+ used (string-width (pop rest))))
+          (setq count (1+ count)))
+        (dolist (seg rest)
+          (let ((piece (if line
+                           seg
+                         (concat " " (string-remove-prefix " | " seg)))))
+            (if (and line (> (+ (string-width line) (string-width piece))
+                             width))
+                (progn (push line lines)
+                       (setq line (concat
+                                   " " (string-remove-prefix " | " seg))))
+              (setq line (if line (concat line piece) piece)))))
+        (when line (push line lines))
+        (list count t (nreverse lines))))))
+
+(defvar-local ardentia-dashboard--layout-cache nil
+  "Cached (HEADER-COUNT . COMPACT) for the header line, or nil.")
+
+(defvar-local ardentia-dashboard--overflow-overlay nil
+  "Overlay at the top of the buffer showing the overflow lines, or nil.")
+
+(defun ardentia-dashboard--escape-percent (string)
+  "Return STRING with every `%' doubled, keeping text properties.
+The header line is a mode line construct, where `%' is special."
+  (let ((out nil)
+        (i 0)
+        (len (length string)))
+    (while (< i len)
+      (let ((ch (substring string i (1+ i))))
+        (push (if (equal ch "%") (concat ch ch) ch) out))
+      (setq i (1+ i)))
+    (apply #'concat (nreverse out))))
+
+(defun ardentia-dashboard--header-line ()
+  "Return the header line text of the current dashboard, `%' escaped.
+Uses the cached layout; the segments themselves are fresh."
+  (let* ((segs (ardentia-dashboard--info-segments
+                nil (cdr ardentia-dashboard--layout-cache)))
+         (count (car ardentia-dashboard--layout-cache)))
+    (ardentia-dashboard--escape-percent
+     (apply #'concat (if count (seq-take segs count) segs)))))
+
+(defun ardentia-dashboard--width ()
+  "Return the columns usable by the info line, or nil when not displayed.
+This is the smallest window width over all windows showing the buffer."
+  (let ((windows (get-buffer-window-list (current-buffer) nil t)))
+    (when windows
+      (apply #'min (mapcar (lambda (w) (1- (window-body-width w)))
+                           windows)))))
+
+(defun ardentia-dashboard--update-layout ()
+  "Recompute header line cache and overflow lines of the current buffer."
+  (let* ((layout (ardentia-dashboard--layout
+                  (ardentia-dashboard--width)))
+         (lines (nth 2 layout))
+         (text (and lines (concat (string-join lines "\n") "\n"))))
+    (setq ardentia-dashboard--layout-cache
+          (cons (nth 0 layout) (nth 1 layout)))
+    (if (not text)
+        (when (overlayp ardentia-dashboard--overflow-overlay)
+          (delete-overlay ardentia-dashboard--overflow-overlay)
+          (setq ardentia-dashboard--overflow-overlay nil))
+      (setq text (copy-sequence text))
+      (add-face-text-property 0 (length text) 'header-line t text)
+      (if (overlayp ardentia-dashboard--overflow-overlay)
+          (move-overlay ardentia-dashboard--overflow-overlay
+                        (point-min) (point-min))
+        (setq ardentia-dashboard--overflow-overlay
+              (make-overlay (point-min) (point-min) nil t)))
+      (overlay-put ardentia-dashboard--overflow-overlay
+                   'before-string text))
+    (force-mode-line-update)))
+
+(defun ardentia-dashboard--window-size-change (window)
+  "Update the layout of the buffer shown in WINDOW; never signal."
+  (with-demoted-errors "ardentia layout: %S"
+    (when (window-live-p window)
+      (with-current-buffer (window-buffer window)
+        (when (derived-mode-p 'ardentia-dashboard-mode)
+          (ardentia-dashboard--update-layout))))))
 
 (defcustom ardentia-dashboard-show-later t
   "Non-nil means the dashboard lists ready tasks that are not yet due.
@@ -160,7 +293,9 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
   (setq tabulated-list-use-header-line nil)
   (tabulated-list-init-header)
   (setq header-line-format
-        '(:eval (ardentia-dashboard--info-line)))
+        '(:eval (ardentia-dashboard--header-line)))
+  (add-hook 'window-size-change-functions
+            #'ardentia-dashboard--window-size-change nil t)
   (ardentia-dashboard--refresh-timer-start))
 
 (defun ardentia-dashboard--task-at-point ()
@@ -175,7 +310,7 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
                                      (current-time)
                                      (not (ardentia-dashboard--show-later-p))))
   (tabulated-list-print t)
-  (force-mode-line-update))
+  (ardentia-dashboard--update-layout))
 
 (defun ardentia-dashboard--live-buffers ()
   "Return the live dashboard buffers."

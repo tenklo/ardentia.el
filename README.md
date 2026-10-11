@@ -176,6 +176,10 @@ is waiting for its limit to reset, the pause:
   `runner paused until HH:MM`. A missing, expired or malformed file means
   no pause. The path is `ardentia-usage-limit-state-file`.
 - `ardentia-usage-enabled` nil turns the fetch and the usage text off.
+- Narrow windows: when the line does not fit, the timer times are
+  shortened (`HH:MM` today, otherwise `Ddd HH:MM`) and the header line
+  keeps as many parts as fit. The remaining parts move into lines at the
+  top of the buffer, and the layout follows window resizes.
 
 ### Keys in the completed view
 

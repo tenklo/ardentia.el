@@ -2471,4 +2471,127 @@ otherwise.  It logs the arguments, and the stdin text of a send."
       (should-not (string-match-p "5h" (ardentia-dashboard--info-line st))))))
 
 
+;;;; Dashboard header line layout
+
+(defun ardentia-test--layout-state ()
+  "Return a state with long timer stamps and usage data."
+  (setq ardentia-usage--state
+        (append (list :time (current-time))
+                (ardentia-usage--parse ardentia-test--usage-json)))
+  (list :host "desktop" :time (current-time)
+        :timer '(:last "Sun 2026-10-11 08:45:17 CEST"
+                 :next "Sun 2026-10-11 09:00:12 CEST")))
+
+(defun ardentia-test--squash (string)
+  "Return STRING without whitespace and bars, for content comparison."
+  (replace-regexp-in-string "[ \t\n|]" "" (substring-no-properties string)))
+
+(ert-deftest ardentia-test-short-time ()
+  (let ((now (encode-time '(0 0 12 11 10 2026 nil -1 nil))))
+    (should (equal (ardentia-dashboard--short-time
+                    "Sun 2026-10-11 08:45:17 CEST" now)
+                   "08:45"))
+    (should (equal (ardentia-dashboard--short-time
+                    "Mon 2026-10-12 09:00:12 CEST" now)
+                   "Mon 09:00"))
+    (should (null (ardentia-dashboard--short-time nil now)))
+    (should (equal (ardentia-dashboard--short-time "after the current run" now)
+                   "after the current run"))
+    (should (equal (ardentia-dashboard--short-time "L" now) "L"))))
+
+(ert-deftest ardentia-test-info-segments ()
+  (let* ((ardentia-usage-enabled t)
+         (ardentia-usage--zone "UTC")
+         (ardentia-usage--pause nil)
+         (ardentia-usage--state nil)
+         (st (ardentia-test--layout-state))
+         (segs (ardentia-dashboard--info-segments st)))
+    (should (string-prefix-p " Host: desktop" (car segs)))
+    (dolist (seg (cdr segs))
+      (should (string-prefix-p " | " seg)))
+    (should (equal (apply #'concat segs)
+                   (ardentia-dashboard--info-line st)))
+    (should (> (length segs) 4))))
+
+(ert-deftest ardentia-test-layout-wide ()
+  (let* ((ardentia-usage-enabled t)
+         (ardentia-usage--zone "UTC")
+         (ardentia-usage--pause nil)
+         (ardentia-usage--state nil)
+         (st (ardentia-test--layout-state))
+         (n (length (ardentia-dashboard--info-segments st))))
+    (should (equal (ardentia-dashboard--layout nil st) (list n nil nil)))
+    (should (equal (ardentia-dashboard--layout 500 st) (list n nil nil)))))
+
+(ert-deftest ardentia-test-layout-narrow ()
+  (let* ((ardentia-usage-enabled t)
+         (ardentia-usage--zone "UTC")
+         (ardentia-usage--pause nil)
+         (ardentia-usage--state nil)
+         (st (ardentia-test--layout-state)))
+    (dolist (width '(80 30))
+      (pcase-let* ((`(,count ,compact ,lines)
+                    (ardentia-dashboard--layout width st))
+                   (segs (ardentia-dashboard--info-segments st t))
+                   (head (apply #'concat (seq-take segs count))))
+        (should compact)
+        (should lines)
+        (should (>= count 1))
+        (when (> count 1) (should (<= (string-width head) width)))
+        (dolist (l lines)
+          (should (string-prefix-p " " l))
+          (should-not (string-prefix-p " |" l))
+          (when (> (length (split-string l " | ")) 1)
+            (should (<= (string-width l) width))))
+        ;; Nothing lost or duplicated.
+        (should (equal (ardentia-test--squash
+                        (concat head (apply #'concat lines)))
+                       (ardentia-test--squash (apply #'concat segs))))))
+    (let ((segs (ardentia-dashboard--info-segments st t)))
+      (should (equal (cadr segs) " | Timer last: 08:45 next: 09:00"))
+      (should (= (length (ardentia-dashboard--layout 30 st))
+                 3)))))
+
+(ert-deftest ardentia-test-escape-percent ()
+  (let* ((s (concat "a " (propertize "5%" 'face 'warning) " b%"))
+         (e (ardentia-dashboard--escape-percent s)))
+    (should (equal (substring-no-properties e) "a 5%% b%%"))
+    (should (eq (get-text-property 2 'face e) 'warning))
+    (should (eq (get-text-property 4 'face e) 'warning))
+    (should (equal (ardentia-dashboard--escape-percent "") ""))))
+
+(ert-deftest ardentia-test-header-line-cached-count ()
+  (let* ((ardentia-usage-enabled t)
+         (ardentia-usage--zone "UTC")
+         (ardentia-usage--pause nil)
+         (ardentia-usage--state nil)
+         (ardentia--state (ardentia-test--layout-state)))
+    (let ((ardentia-dashboard--layout-cache nil))
+      (should (string-match-p "5h 42%% (resets "
+                              (ardentia-dashboard--header-line))))
+    (let ((ardentia-dashboard--layout-cache '(2 . t)))
+      (let ((line (ardentia-dashboard--header-line)))
+        (should (equal (substring-no-properties line)
+                       " Host: desktop | Timer last: 08:45 next: 09:00"))))))
+
+(ert-deftest ardentia-test-update-layout-overlay ()
+  (let* ((ardentia-usage-enabled t)
+         (ardentia-usage--zone "UTC")
+         (ardentia-usage--pause nil)
+         (ardentia-usage--state nil)
+         (ardentia--state (ardentia-test--layout-state)))
+    (with-temp-buffer
+      (ardentia-dashboard-mode)
+      (cl-letf (((symbol-function 'ardentia-dashboard--width) (lambda () 40)))
+        (ardentia-dashboard--update-layout)
+        (should (overlayp ardentia-dashboard--overflow-overlay))
+        (should (= (overlay-start ardentia-dashboard--overflow-overlay)
+                   (point-min)))
+        (should (string-suffix-p "\n" (overlay-get
+                                       ardentia-dashboard--overflow-overlay
+                                       'before-string))))
+      (cl-letf (((symbol-function 'ardentia-dashboard--width) (lambda () nil)))
+        (ardentia-dashboard--update-layout)
+        (should-not ardentia-dashboard--overflow-overlay)))))
+
 ;;; ardentia-test.el ends here
