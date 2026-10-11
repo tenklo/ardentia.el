@@ -56,6 +56,12 @@ Three more tags mark trouble, in any lifecycle state or none:
 - `systemctl --user show` on `ardentia-service-unit` and
   `ardentia-timer-unit`: last and next run of the runner, shown in the
   dashboard. Set them to the units of your runner.
+- `ardentia-review-alert-skip-command`: a program that decides whether
+  a task should not be announced. Only called when
+  `ardentia-review-alert` is on, as `PROGRAM FILE ID` for each new
+  review task that has an ID. Exit status 0 means do not announce the
+  task; any other status, or a program that is missing or not
+  executable, means announce it. nil switches the check off.
 - `ardentia-run-task-command`: starts the runner on one task right now
   (`x`). In every element `%i` is the task's org ID and `%f` its file.
   The default uses `systemd-run --user` (a transient unit, independent
@@ -344,7 +350,29 @@ to restart the timer),
 `ardentia-usage-enabled`, `ardentia-usage-credentials-file`,
 `ardentia-usage-url`, `ardentia-usage-min-interval`,
 `ardentia-usage-limit-state-file`, `ardentia-usage-warn-percent`,
-`ardentia-usage-hide-idle-scoped`.
+`ardentia-usage-hide-idle-scoped`,
+`ardentia-review-alert`, `ardentia-review-alert-ding`,
+`ardentia-review-alert-skip-command`.
+
+### Alert for new review tasks
+
+`ardentia-review-alert` is off (nil) by default. Set it to `message` to
+get an echo-area message when a task newly reaches the review queue, or
+to a function that receives the list of the new task plists (for
+example a wrapper around `alert` or `notifications-notify`).
+`ardentia-review-alert-ding` also rings the bell.
+
+- The first observation after loading is only a baseline: tasks that
+  are already waiting are not announced.
+- A task that leaves the queue and comes back is announced again.
+- Several new tasks are announced together in one alert.
+- New tasks are first run through `ardentia-review-alert-skip-command`,
+  see "What ardentia calls".
+- There is no timer of its own. The check runs with the refresh of the
+  mode-line counter (`ardentia-mode-line-mode`) and of an open
+  dashboard, so alerts only arrive while one of them is active.
+- Other code can use the abnormal hook `ardentia-review-tasks-functions`,
+  which receives the current review tasks after each such refresh.
 
 ## Design rules
 
@@ -377,6 +405,7 @@ to restart the timer),
 - `ardentia-run.el` start the runner on one task now
 - `ardentia-usage.el` usage limits and runner pause in the header line
 - `ardentia-modeline.el` mode-line counter
+- `ardentia-alert.el` opt-in alert for new review tasks
 - `ardentia.el` entry point and transient menu
 - `ardentia-test.el`, `run-tests` tests
 
