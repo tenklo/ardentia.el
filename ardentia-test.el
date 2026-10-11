@@ -3411,7 +3411,6 @@ otherwise.  It logs the arguments, and the stdin text of a send."
     (should-error (ardentia-knowledge) :type 'user-error)
     (should-error (ardentia-agents) :type 'user-error)))
 
-;;; ardentia-test.el ends here
 
 ;;; Per-buffer help menus
 
@@ -3491,3 +3490,5 @@ Bindings inherited from a parent keymap are not included."
           (should (memq (cdr a) cmds))
           (should (eq (keymap-lookup (symbol-value map-sym) (car a)) (cdr a))))))
     (should (= n 4))))
+
+;;; ardentia-test.el ends here
