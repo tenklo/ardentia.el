@@ -245,7 +245,8 @@ buffer needs it.
 
 Keys: `g` re-read from scratch, `f` toggle following, `o` visit the
 heading, `i` send a message into the running session, `a` open in
-`agent-shell`, `q` quit.
+`agent-shell`, `C-c C-n`/`C-c C-p` (also `n`/`p`) next/previous entry,
+`q` quit.
 
 Live input: the runner can keep an input pipe open per orchestrator, fed by
 `ardentia-session-say-command` (default `ai/tools/aiready-say`;

@@ -379,6 +379,51 @@ PREFIX is the subagent prefix (a string, possibly empty)."
 (defvar ardentia-session--timer nil
   "The timer polling all following transcript buffers, or nil.")
 
+(defconst ardentia-session--entry-regexp
+  "^\\(?:[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\\|--:--:--\\) "
+  "Regexp matching the first line of a transcript entry.")
+
+(defun ardentia-session-next-entry (&optional n)
+  "Move point to the beginning of the Nth next entry.
+Entries start with a timestamp line.  A negative N moves backward.
+Signal a `user-error' and leave point alone if there is no such entry."
+  (interactive "p")
+  (let ((n (or n 1))
+        (origin (point)))
+    (if (< n 0)
+        (ardentia-session-previous-entry (- n))
+      (dotimes (_ n)
+        (end-of-line)
+        (if (re-search-forward ardentia-session--entry-regexp nil t)
+            (goto-char (match-beginning 0))
+          (goto-char origin)
+          (user-error "No next entry"))))))
+
+(defun ardentia-session-previous-entry (&optional n)
+  "Move point to the beginning of the Nth previous entry.
+Entries start with a timestamp line.  From inside an entry the first
+step goes to the head of that entry.  A negative N moves forward.
+Signal a `user-error' and leave point alone if there is no such entry."
+  (interactive "p")
+  (let ((n (or n 1))
+        (origin (point)))
+    (if (< n 0)
+        (ardentia-session-next-entry (- n))
+      (dotimes (_ n)
+        (let ((start (point)))
+          (beginning-of-line)
+          (when (= start (point))
+            (if (bobp)
+                (progn (goto-char origin)
+                       (user-error "No previous entry"))
+              (forward-line -1)))
+          (while (not (or (looking-at ardentia-session--entry-regexp)
+                          (bobp)))
+            (forward-line -1))
+          (unless (looking-at ardentia-session--entry-regexp)
+            (goto-char origin)
+            (user-error "No previous entry")))))))
+
 (defvar-keymap ardentia-session-mode-map
   :doc "Keymap for `ardentia-session-mode'."
   "g" #'ardentia-session-reread
@@ -386,6 +431,10 @@ PREFIX is the subagent prefix (a string, possibly empty)."
   "o" #'ardentia-session-visit
   "i" #'ardentia-session-compose
   "a" #'ardentia-session-agent-shell-here
+  "n" #'ardentia-session-next-entry
+  "p" #'ardentia-session-previous-entry
+  "C-c C-n" #'ardentia-session-next-entry
+  "C-c C-p" #'ardentia-session-previous-entry
   "q" #'quit-window
   "?" #'ardentia)
 
