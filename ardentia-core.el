@@ -728,6 +728,20 @@ Keys: :tasks :merges :host :timer :time :error :refreshing.")
 (defvar ardentia--refresh-callbacks nil
   "Callbacks waiting for the refresh that is currently running.")
 
+(defvar ardentia-review-tasks-functions nil
+  "Abnormal hook run after a successful fetch that includes review tasks.
+Each function receives the list of the tasks currently in the review
+queue (tag humanreview).  It is run by `ardentia-refresh' and by the
+mode-line counter refresh.")
+
+(defun ardentia--review-tasks (tasks)
+  "Return the tasks of the review queue among TASKS."
+  (seq-filter (lambda (tk) (eq (plist-get tk :queue) 'review)) tasks))
+
+(defun ardentia--run-review-hook (review)
+  "Run `ardentia-review-tasks-functions' with the REVIEW tasks."
+  (run-hook-with-args 'ardentia-review-tasks-functions review))
+
 (defun ardentia-refresh (&optional callback)
   "Refresh tasks, host and timer status asynchronously; then call CALLBACK.
 When a refresh is already running, CALLBACK joins it."
@@ -744,10 +758,9 @@ When a refresh is already running, CALLBACK joins it."
                                  :time (current-time) :error err
                                  :refreshing nil))
                      (unless err
-                       (setq ardentia--review-count
-                             (length (seq-filter
-                                      (lambda (tk) (eq (plist-get tk :queue) 'review))
-                                      tasks))))
+                       (let ((review (ardentia--review-tasks tasks)))
+                         (setq ardentia--review-count (length review))
+                         (ardentia--run-review-hook review)))
                      (let ((cbs (nreverse ardentia--refresh-callbacks)))
                        (setq ardentia--refresh-callbacks nil)
                        (dolist (cb cbs) (funcall cb))))))))

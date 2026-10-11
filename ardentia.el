@@ -32,6 +32,8 @@
 ;; and creates new agent tasks.  Reads go through the `org-tool' CLI,
 ;; writes happen in the visiting org buffer.  See README.md.
 ;;
+;; Optional in-Emacs alert for new review tasks: `ardentia-review-alert'.
+;;
 ;; Entry point: `M-x ardentia'.
 
 ;;; Code:
@@ -46,6 +48,7 @@
 (require 'ardentia-capture)
 (require 'ardentia-run)
 (require 'ardentia-modeline)
+(require 'ardentia-alert)
 
 (defun ardentia-refresh-dashboards ()
   "Refresh all ardentia dashboards asynchronously."

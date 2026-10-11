@@ -1048,6 +1048,227 @@ Text
       (ardentia--mode-line-tick)
       (should-not ardentia--mode-line-busy))))
 
+;;;; Review alert
+
+(defun ardentia-test--rt (id &optional title)
+  "Return a review task with ID and TITLE."
+  (list :queue 'review :file "/o/r.org" :id id :title (or title id) :tags nil))
+
+(defmacro ardentia-test--with-alert (opts &rest body)
+  "Run BODY with a fresh alert state, OPTS bound, and no real processes.
+`runs' collects the skip command calls, `skip-status' (an alist from ID
+to status) answers them, `alerts' collects the alerted task lists."
+  (declare (indent 1))
+  `(let ((ardentia--review-alert-seen nil)
+         (ardentia--review-alert-baseline nil)
+         (ardentia-review-alert-ding nil)
+         (ardentia-review-alert-skip-command "/bin/sh")
+         (ardentia-review-alert nil)
+         (runs nil) (skip-status nil) (alerts nil))
+     (ignore skip-status)
+     (let ,opts
+       (cl-letf (((symbol-function 'ardentia--run-async)
+                  (lambda (program args cb)
+                    (push (cons program args) runs)
+                    (funcall cb (alist-get (cadr args) skip-status 1
+                                           nil #'equal)
+                             "" "")))
+                 ((symbol-function 'ding) #'ignore))
+         (setq ardentia-review-alert
+               (lambda (tasks) (push (mapcar (lambda (tk) (plist-get tk :id))
+                                             tasks)
+                                     alerts)))
+         ,@body))))
+
+(ert-deftest ardentia-test-alert-defaults ()
+  (should (null (default-value 'ardentia-review-alert)))
+  (should (null (default-value 'ardentia-review-alert-ding)))
+  (should (string-suffix-p "ai/tools/notify-skip"
+                           (default-value
+                            'ardentia-review-alert-skip-command))))
+
+(ert-deftest ardentia-test-alert-baseline-silent ()
+  (ardentia-test--with-alert nil
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")))
+    (should-not alerts)
+    (should-not runs)))
+
+(ert-deftest ardentia-test-alert-new-task ()
+  (ardentia-test--with-alert nil
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")))
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")
+                                        (ardentia-test--rt "b")))
+    (should (equal alerts '(("b"))))
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")
+                                        (ardentia-test--rt "b")))
+    (should (= (length alerts) 1))))
+
+(ert-deftest ardentia-test-alert-returning-task-alerts-again ()
+  (ardentia-test--with-alert nil
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")))
+    (ardentia--review-alert-check nil)
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")))
+    (should (equal alerts '(("a"))))))
+
+(ert-deftest ardentia-test-alert-skip-exit-0 ()
+  (ardentia-test--with-alert nil
+    (setq skip-status '(("b" . 0)))
+    (ardentia--review-alert-check nil)
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")
+                                        (ardentia-test--rt "b")))
+    (should (equal alerts '(("a"))))
+    (should (equal (car (last (car runs))) "b"))
+    (should (equal (cdr (car runs)) '("/o/r.org" "b")))))
+
+(ert-deftest ardentia-test-alert-skip-all-no-alert ()
+  (ardentia-test--with-alert nil
+    (setq skip-status '(("b" . 0)))
+    (ardentia--review-alert-check nil)
+    (ardentia--review-alert-check (list (ardentia-test--rt "b")))
+    (should-not alerts)))
+
+(ert-deftest ardentia-test-alert-skip-exit-other-alerts ()
+  (ardentia-test--with-alert nil
+    (setq skip-status '(("a" . 1) ("b" . 2)))
+    (ardentia--review-alert-check nil)
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")
+                                        (ardentia-test--rt "b")))
+    (should (equal alerts '(("a" "b"))))))
+
+(ert-deftest ardentia-test-alert-no-id-not-checked ()
+  (ardentia-test--with-alert nil
+    (ardentia--review-alert-check nil)
+    (ardentia--review-alert-check (list (ardentia-test--rt nil "Plain")))
+    (should (= (length alerts) 1))
+    (should-not runs)))
+
+(ert-deftest ardentia-test-alert-missing-command-alerts ()
+  (ardentia-test--with-alert ((ardentia-review-alert-skip-command
+                               "/nonexistent/notify-skip"))
+    (setq skip-status '(("a" . 0)))
+    (ardentia--review-alert-check nil)
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")))
+    (should (equal alerts '(("a"))))
+    (should-not runs)))
+
+(ert-deftest ardentia-test-alert-nil-command-alerts ()
+  (ardentia-test--with-alert ((ardentia-review-alert-skip-command nil))
+    (ardentia--review-alert-check nil)
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")))
+    (should (equal alerts '(("a"))))
+    (should-not runs)))
+
+(ert-deftest ardentia-test-alert-off-does-nothing-keeps-baseline ()
+  (ardentia-test--with-alert nil
+    (setq ardentia-review-alert nil)
+    (ardentia--review-alert-check nil)
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")))
+    (should-not runs)
+    (should-not alerts)
+    (setq ardentia-review-alert (lambda (tasks) (push tasks alerts)))
+    (ardentia--review-alert-check (list (ardentia-test--rt "a")))
+    (should-not alerts)))
+
+(ert-deftest ardentia-test-alert-message ()
+  (ardentia-test--with-alert nil
+    (setq ardentia-review-alert 'message)
+    (let (msgs)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (push (apply #'format fmt args) msgs))))
+        (ardentia--review-alert-check nil)
+        (ardentia--review-alert-check (list (ardentia-test--rt "a" "One")))
+        (ardentia--review-alert-check (list (ardentia-test--rt "a" "One")
+                                            (ardentia-test--rt "b" "Two")
+                                            (ardentia-test--rt "c" "Three")))
+        (should (equal (reverse msgs)
+                       '("ardentia: for review: One"
+                         "ardentia: 2 new tasks for review: Two; Three")))))))
+
+(ert-deftest ardentia-test-alert-ding ()
+  (ardentia-test--with-alert nil
+    (let ((ardentia-review-alert-ding t) dings)
+      (cl-letf (((symbol-function 'ding) (lambda (&rest _) (push t dings))))
+        (ardentia--review-alert-check nil)
+        (ardentia--review-alert-check (list (ardentia-test--rt "a")))
+        (should (= (length dings) 1))))))
+
+(ert-deftest ardentia-test-alert-error-does-not-propagate ()
+  (ardentia-test--with-alert nil
+    (setq ardentia-review-alert (lambda (_tasks) (error "Boom")))
+    (cl-letf (((symbol-function 'message) #'ignore))
+      (ardentia--review-alert-check nil)
+      (ardentia--review-alert-check (list (ardentia-test--rt "a")))
+      (cl-letf (((symbol-function 'ardentia--task-key)
+                 (lambda (_tk) (error "Boom"))))
+        (ardentia--review-alert-check (list (ardentia-test--rt "z")))))))
+
+(ert-deftest ardentia-test-alert-hook-registered ()
+  (should (memq #'ardentia--review-alert-check
+                ardentia-review-tasks-functions)))
+
+(ert-deftest ardentia-test-alert-hook-from-refresh ()
+  (let ((ardentia--state nil) (ardentia--review-count nil)
+        (ardentia--refresh-callbacks nil) got
+        (ardentia-review-tasks-functions nil))
+    (add-hook 'ardentia-review-tasks-functions (lambda (r) (push r got)))
+    (cl-letf (((symbol-function 'ardentia--fetch)
+               (lambda (cb)
+                 (funcall cb (list (ardentia-test--rt "a")
+                                   (list :queue 'ready :id "r" :file "/o/x"))
+                          nil)))
+              ((symbol-function 'ardentia--fetch-host)
+               (lambda (cb) (funcall cb "h")))
+              ((symbol-function 'ardentia--fetch-timer-status)
+               (lambda (cb) (funcall cb nil)))
+              ((symbol-function 'ardentia--list-merges) #'ignore))
+      (ardentia-refresh))
+    (should (= (length got) 1))
+    (should (equal (mapcar (lambda (tk) (plist-get tk :id)) (car got))
+                   '("a")))
+    (should (= ardentia--review-count 1))))
+
+(ert-deftest ardentia-test-alert-hook-not-run-on-refresh-error ()
+  (let ((ardentia--state nil) (ardentia--review-count nil)
+        (ardentia--refresh-callbacks nil) got
+        (ardentia-review-tasks-functions nil))
+    (add-hook 'ardentia-review-tasks-functions (lambda (r) (push r got)))
+    (cl-letf (((symbol-function 'ardentia--fetch)
+               (lambda (cb) (funcall cb nil "failed")))
+              ((symbol-function 'ardentia--fetch-host)
+               (lambda (cb) (funcall cb "h")))
+              ((symbol-function 'ardentia--fetch-timer-status)
+               (lambda (cb) (funcall cb nil)))
+              ((symbol-function 'ardentia--list-merges) #'ignore))
+      (ardentia-refresh))
+    (should-not got)))
+
+(ert-deftest ardentia-test-alert-hook-from-mode-line-refresh ()
+  (let ((ardentia--mode-line-busy nil) (ardentia--review-count nil)
+        got (ardentia-review-tasks-functions nil))
+    (add-hook 'ardentia-review-tasks-functions (lambda (r) (push r got)))
+    (cl-letf (((symbol-function 'ardentia--fetch-tags)
+               (lambda (_tags cb)
+                 (funcall cb (list (ardentia-test--rt "a")
+                                   (list :queue 'ready :id "r" :file "/o/x"))
+                          nil)))
+              ((symbol-function 'force-mode-line-update) #'ignore))
+      (ardentia--mode-line-refresh))
+    (should (= (length got) 1))
+    (should (equal (mapcar (lambda (tk) (plist-get tk :id)) (car got))
+                   '("a")))
+    (should (= ardentia--review-count 1))))
+
+(ert-deftest ardentia-test-alert-hook-not-run-on-mode-line-error ()
+  (let ((ardentia--mode-line-busy nil) got
+        (ardentia-review-tasks-functions nil))
+    (add-hook 'ardentia-review-tasks-functions (lambda (r) (push r got)))
+    (cl-letf (((symbol-function 'ardentia--fetch-tags)
+               (lambda (_tags cb) (funcall cb nil "failed")))
+              ((symbol-function 'message) #'ignore))
+      (ardentia--mode-line-refresh))
+    (should-not got)))
+
 ;;;; Run a task now
 
 (defun ardentia-test--run-and-wait (command task)

@@ -90,10 +90,10 @@ Changing it via Customize or `setopt' takes effect immediately; a plain
        (setq ardentia--mode-line-busy nil)
        (if err
            (message "ardentia: counter refresh failed: %s" err)
-         (setq ardentia--review-count
-               (length (seq-filter (lambda (tk) (eq (plist-get tk :queue) 'review))
-                                   tasks)))
-         (force-mode-line-update t))))))
+         (let ((review (ardentia--review-tasks tasks)))
+           (setq ardentia--review-count (length review))
+           (force-mode-line-update t)
+           (ardentia--run-review-hook review)))))))
 
 (defun ardentia--mode-line-tick ()
   "Timer function: refresh the counter and never signal an error."
