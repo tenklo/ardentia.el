@@ -1978,8 +1978,19 @@ or, with NO-MULTI-TAG, fails on it like an org-tool that predates the form."
                              (ardentia-completed--entries tasks 'last-7-days nil now))
                      '("new" "mid")))
       (should (equal (mapcar (lambda (e) (plist-get (car e) :title))
-                             (ardentia-completed--entries tasks 'all t now))
-                     '("new" "none"))))))
+                             (ardentia-completed--entries tasks 'all 'review now))
+                     '("new" "none")))
+      (should (equal (mapcar (lambda (e) (plist-get (car e) :title))
+                             (ardentia-completed--entries tasks 'all 'accepted now))
+                     '("mid" "old")))
+      (should (equal (mapcar (lambda (e) (plist-get (car e) :title))
+                             (ardentia-completed--entries tasks 'all 'all now))
+                     '("new" "mid" "old" "none")))))
+  (should (equal (mapcar #'ardentia-completed--state-label
+                         ardentia-completed--states)
+                 '("all" "waiting for review" "accepted")))
+  (should (eq (ardentia-completed--next-state 'all) 'review))
+  (should (eq (ardentia-completed--next-state 'accepted) 'all)))
 
 (ert-deftest ardentia-test-completed-totals ()
   (let* ((a (ardentia-test--task
@@ -2028,33 +2039,6 @@ or, with NO-MULTI-TAG, fails on it like an org-tool that predates the form."
     (should-not (funcall pred big small))
     (should (funcall pred none small))
     (should-not (funcall pred none none))))
-
-(ert-deftest ardentia-test-completed-header-and-keys ()
-  (let ((now (ardentia-test--t ardentia-test--now)))
-    (should (string-match-p
-             "Period: last 7 days | only waiting for review | Refreshed: never | ERROR: boom"
-             (ardentia-completed--info-line nil 'last-7-days t nil "boom" nil now)))
-    (should (string-match-p
-             "refreshing\\.\\.\\.\\'"
-             (ardentia-completed--info-line nil 'all nil nil nil t now))))
-  (dolist (pair '(("g" . ardentia-completed-refresh) ("RET" . ardentia-completed-review)
-                  ("t" . ardentia-completed-transcript) ("o" . ardentia-completed-visit)
-                  ("p" . ardentia-completed-cycle-period)
-                  ("r" . ardentia-completed-toggle-open)
-                  ("?" . ardentia-completed-menu)))
-    (should (eq (keymap-lookup ardentia-completed-mode-map (car pair)) (cdr pair))))
-  (should (eq (keymap-lookup ardentia-dashboard-mode-map "c") 'ardentia-completed))
-  (with-temp-buffer
-    (ardentia-completed-mode)
-    (should (eq ardentia-completed--period ardentia-completed-period))
-    (let ((ardentia-completed--tasks (list (ardentia-test--task :title "X"))))
-      (ardentia-completed--render)
-      (should (= (length tabulated-list-entries) 1))
-      (ardentia-completed-toggle-open)
-      (should ardentia-completed--only-open)
-      (ardentia-completed-cycle-period)
-      (should (eq ardentia-completed--period 'last-30-days))
-      (should (= (length tabulated-list-entries) 0)))))
 
 (ert-deftest ardentia-test-completed-fetch-async ()
   (let* ((dir (make-temp-file "ardentia-fake-" t))
@@ -2977,7 +2961,7 @@ otherwise.  It logs the arguments, and the stdin text of a send."
            (with-current-buffer buf (ardentia-dashboard-mode))
            (cancel-timer ardentia-dashboard--refresh-timer)
            (setq ardentia-dashboard--refresh-timer nil)
-           (ardentia-dashboard--open " *ardentia-test-reopen*" nil)
+           (ardentia-dashboard--open 'dashboard " *ardentia-test-reopen*")
            (should (timerp ardentia-dashboard--refresh-timer)))
        (kill-buffer buf)))))
 
@@ -3028,6 +3012,576 @@ otherwise.  It logs the arguments, and the stdin text of a send."
                                          :title))))
              (should (= start (window-start)))))
        (kill-buffer buf)))))
+
+;;;; Task list views and filters
+
+(defun ardentia-test--stamp-ago (days)
+  "Return an AI_SESSION stamp DAYS days before now."
+  (format-time-string "%Y%m%d-%H%M" (time-subtract (current-time)
+                                                    (* days 86400))))
+
+(defun ardentia-test--lt (title queue host &rest plist)
+  "Return a task plist TITLE in QUEUE claimed by HOST (or nil).
+PLIST adds or overrides keys; :days is the age of AI_SESSION in days."
+  (let* ((days (or (plist-get plist :days) 1))
+         (plist (let ((c (copy-sequence plist))) (cl-remf c :days) c)))
+    (append plist
+            (list :title title :queue queue :file "/o/l.org"
+                  :id (format "id-%s" (downcase title)) :line 1
+                  :tags (list (if (eq queue 'ready) "aiready" "humanreview"))
+                  :props (append (and host `(("AI_CLAIMED_BY" . ,host)))
+                                 `(("AI_SESSION" . ,(ardentia-test--stamp-ago days))
+                                   ("AI_STATUS" . "completed")))))))
+
+(defun ardentia-test--open-tasks ()
+  "Return the open tasks of the fixture, as the shared state holds them."
+  (list (ardentia-test--lt "Alpha" 'review "alpha" :days 1)
+        (ardentia-test--lt "Beta" 'review "beta" :days 10)
+        (ardentia-test--lt "Gamma" 'ready nil :id nil :line 7)
+        (ardentia-test--lt "Delta" 'ready nil :scheduled "<2999-01-01 Mon 10:00>")
+        (ardentia-test--lt "Eps" 'running "alpha")))
+
+(defun ardentia-test--done-tasks ()
+  "Return the accepted tasks of the fixture."
+  (list (ardentia-test--lt "Zeta" 'review "alpha" :done t :todo "DONE" :days 2)
+        (ardentia-test--lt "Eta" 'review "beta" :done t :todo "DONE" :days 40)))
+
+(defmacro ardentia-test--with-list (&rest body)
+  "Run BODY in a task list buffer filled with the fixture tasks.
+The completed cache holds the open review tasks and the accepted ones;
+fetching and the hosts file are replaced by fixtures, the timer is boxed."
+  (declare (indent 0))
+  `(ardentia-test--with-timer-sandbox
+    (let* ((ardentia--state (list :tasks (ardentia-test--open-tasks)
+                                  :host "alpha" :time (current-time)))
+           (ardentia-completed-period 'all)
+           (ardentia-dashboard-show-later t)
+           (buf (get-buffer-create " *ardentia-test-list*")))
+      (cl-letf (((symbol-function 'ardentia-hosts)
+                 (lambda () '(:hosts ("alpha" "beta" "gamma")
+                              :default-host "alpha")))
+                ((symbol-function 'ardentia-dashboard--completed-refresh)
+                 #'ignore))
+        (unwind-protect
+            (with-current-buffer buf
+              (ardentia-dashboard-mode)
+              (setq ardentia-dashboard--completed-tasks
+                    (append (list (nth 0 (ardentia-test--open-tasks))
+                                  (nth 1 (ardentia-test--open-tasks)))
+                            (ardentia-test--done-tasks)))
+              (ardentia-dashboard--render)
+              ,@body)
+          (kill-buffer buf))))))
+
+(defun ardentia-test--shown ()
+  "Return the titles of the rows of the current task list, top to bottom."
+  (mapcar (lambda (e) (plist-get (car e) :title)) tabulated-list-entries))
+
+(defun ardentia-test--header ()
+  "Return the header line text of the current task list."
+  (substring-no-properties (ardentia-dashboard--info-line)))
+
+(defun ardentia-test--at-title ()
+  "Return the title of the row at point."
+  (plist-get (ardentia-dashboard--task-at-point) :title))
+
+(defun ardentia-test--goto (title)
+  "Move point to the row titled TITLE."
+  (goto-char (point-min))
+  (while (not (equal (ardentia-test--at-title) title))
+    (when (eobp) (ert-fail (format "no row %s" title)))
+    (forward-line 1)))
+
+(ert-deftest ardentia-test-list-view-entries-and-columns ()
+  (ardentia-test--with-list
+    ;; dashboard: every open task, the later one last
+    (should (eq (ardentia-dashboard--view-now) 'dashboard))
+    (should (equal (sort (copy-sequence (ardentia-test--shown)) #'string<)
+                   '("Alpha" "Beta" "Delta" "Eps" "Gamma")))
+    (should (equal (car (last (ardentia-test--shown))) "Delta"))
+    (should (equal (car (aref tabulated-list-format 0)) "Queue"))
+    (should (string-match-p "Queue +Status +Host" (buffer-string)))
+    ;; review: only the review queue, same columns
+    (ardentia-dashboard--switch-view 'review)
+    (should (equal (sort (copy-sequence (ardentia-test--shown)) #'string<)
+                   '("Alpha" "Beta")))
+    (should (equal (car (aref tabulated-list-format 0)) "Queue"))
+    ;; completed: open and accepted, newest finish first, own columns
+    (ardentia-dashboard--switch-view 'completed)
+    (should (equal (ardentia-test--shown) '("Alpha" "Zeta" "Beta" "Eta")))
+    (should (equal (mapcar #'car (append tabulated-list-format nil))
+                   '("Finished" "State" "Status" "Host" "Runs" "Tokens" "Cost"
+                     "File" "Title")))
+    (should (string-match-p "Finished +State +Status" (buffer-string)))
+    (should (string-match-p "DONE +completed +alpha" (buffer-string)))
+    ;; back: the dashboard columns again
+    (ardentia-dashboard--switch-view 'dashboard)
+    (should (equal (car (aref tabulated-list-format 0)) "Queue"))
+    (should (string-match-p "Queue +Status +Host" (buffer-string)))))
+
+(ert-deftest ardentia-test-list-completed-sorting ()
+  (ardentia-test--with-list
+    (ardentia-dashboard--switch-view 'completed)
+    ;; header click sorting stays available, numerically for Tokens
+    (should (functionp (nth 2 (aref tabulated-list-format 5))))
+    (should (eq (nth 2 (aref tabulated-list-format 0)) t))
+    (setq tabulated-list-sort-key '("Finished" . nil))
+    ;; leaving a view starts the sort over
+    (ardentia-dashboard--switch-view 'review)
+    (should (null tabulated-list-sort-key))
+    (setq tabulated-list-sort-key '("Queue"))
+    (ardentia-dashboard--switch-view 'completed)
+    (should (null tabulated-list-sort-key))
+    (should (equal (ardentia-test--shown) '("Alpha" "Zeta" "Beta" "Eta")))))
+
+(ert-deftest ardentia-test-list-switch-keys-and-cycle ()
+  (ardentia-test--with-list
+    (dolist (pair '(("1" . ardentia-dashboard) ("2" . ardentia-review-inbox)
+                    ("3" . ardentia-completed) ("c" . ardentia-completed)
+                    ("r" . ardentia-review-inbox)
+                    ("TAB" . ardentia-dashboard-next-view)
+                    ("<backtab>" . ardentia-dashboard-previous-view)
+                    ("f" . ardentia-dashboard-filter-menu)
+                    ("h" . ardentia-dashboard-cycle-host)
+                    ("/" . ardentia-dashboard-filter-title)
+                    ("l" . ardentia-dashboard-toggle-later)
+                    ("P" . ardentia-dashboard-cycle-period)
+                    ("w" . ardentia-dashboard-cycle-state)))
+      (should (eq (keymap-lookup ardentia-dashboard-mode-map (car pair))
+                  (cdr pair))))
+    ;; p and n stay line navigation, S still sorts
+    (dolist (key '("p" "n"))
+      (should-not (string-match-p "ardentia-dashboard-\\(cycle\\|filter\\|toggle\\)"
+                                  (format "%s" (keymap-lookup
+                                                ardentia-dashboard-mode-map key)))))
+    (should (eq (keymap-lookup ardentia-dashboard-mode-map "S")
+                'tabulated-list-sort))
+    (ardentia-dashboard-next-view)
+    (should (eq (ardentia-dashboard--view-now) 'review))
+    (ardentia-dashboard-next-view)
+    (should (eq (ardentia-dashboard--view-now) 'completed))
+    (ardentia-dashboard-next-view)
+    (should (eq (ardentia-dashboard--view-now) 'dashboard))
+    (ardentia-dashboard-previous-view)
+    (should (eq (ardentia-dashboard--view-now) 'completed))
+    (ardentia-dashboard-previous-view)
+    (should (eq (ardentia-dashboard--view-now) 'review))))
+
+(ert-deftest ardentia-test-list-point-memory-per-view ()
+  (ardentia-test--with-list
+    (ardentia-test--goto "Eps")
+    (ardentia-dashboard--switch-view 'review)
+    ;; never seen: the top of the list
+    (should (equal (ardentia-test--at-title) (car (ardentia-test--shown))))
+    (ardentia-test--goto "Beta")
+    (ardentia-dashboard--switch-view 'completed)
+    (should (equal (ardentia-test--at-title) "Alpha"))
+    (ardentia-test--goto "Eta")
+    (ardentia-dashboard--switch-view 'dashboard)
+    (should (equal (ardentia-test--at-title) "Eps"))
+    (ardentia-dashboard--switch-view 'completed)
+    (should (equal (ardentia-test--at-title) "Eta"))
+    (ardentia-dashboard--switch-view 'review)
+    (should (equal (ardentia-test--at-title) "Beta"))
+    ;; a remembered row that is gone: the top again
+    (ardentia-dashboard--switch-view 'dashboard)
+    (setq ardentia--state (list :tasks (list (ardentia-test--lt "New" 'ready nil))
+                                :host "alpha"))
+    (ardentia-dashboard--render)
+    (ardentia-dashboard--switch-view 'review)
+    (ardentia-dashboard--switch-view 'dashboard)
+    (should (equal (ardentia-test--at-title) "New"))))
+
+(ert-deftest ardentia-test-list-host-filter ()
+  (ardentia-test--with-list
+    ;; all -> local -> the other hosts -> all
+    (should (null (ardentia-dashboard--next-host nil nil nil)))
+    (should (equal (ardentia-dashboard--next-host nil "alpha" '("alpha" "beta"))
+                   "alpha"))
+    (should (equal (ardentia-dashboard--next-host "alpha" "alpha" '("alpha" "beta"))
+                   "beta"))
+    (should (null (ardentia-dashboard--next-host "beta" "alpha" '("alpha" "beta"))))
+    (should (null (ardentia-dashboard--next-host "gone" "alpha" '("alpha"))))
+    (ardentia-dashboard-cycle-host)
+    (should (equal ardentia-dashboard--filter-host "alpha"))
+    ;; Gamma and Delta are unclaimed: they count for the default host
+    (should (equal (sort (copy-sequence (ardentia-test--shown)) #'string<)
+                   '("Alpha" "Delta" "Eps" "Gamma")))
+    (ardentia-dashboard--switch-view 'review)
+    (should (equal (ardentia-test--shown) '("Alpha")))
+    (ardentia-dashboard--switch-view 'completed)
+    (should (equal (ardentia-test--shown) '("Alpha" "Zeta")))
+    (ardentia-dashboard-cycle-host)
+    (should (equal ardentia-dashboard--filter-host "beta"))
+    (should (equal (ardentia-test--shown) '("Beta" "Eta")))
+    (ardentia-dashboard-cycle-host)
+    (should (equal ardentia-dashboard--filter-host "gamma"))
+    (should (null (ardentia-test--shown)))
+    (ardentia-dashboard-cycle-host)
+    (should (null ardentia-dashboard--filter-host))
+    (should (= (length (ardentia-test--shown)) 4))))
+
+(ert-deftest ardentia-test-list-title-filter ()
+  (ardentia-test--with-list
+    (ardentia-dashboard-filter-title "^[ab]")
+    (should (equal (sort (copy-sequence (ardentia-test--shown)) #'string<)
+                   '("Alpha" "Beta")))
+    (ardentia-dashboard--switch-view 'completed)
+    (should (equal (ardentia-test--shown) '("Alpha" "Beta")))
+    (ardentia-dashboard-filter-title "ZETA")
+    (should (equal (ardentia-test--shown) '("Zeta")))
+    ;; an invalid regexp is refused and keeps the filter
+    (should-error (ardentia-dashboard-filter-title "[") :type 'user-error)
+    (should (equal ardentia-dashboard--filter-title "ZETA"))
+    ;; empty input clears
+    (ardentia-dashboard-filter-title "")
+    (should (null ardentia-dashboard--filter-title))
+    (should (= (length (ardentia-test--shown)) 4))))
+
+(ert-deftest ardentia-test-list-merges-follow-filters ()
+  (ardentia-test--with-list
+    (setq ardentia--state
+          (list :tasks (ardentia-test--open-tasks) :host "alpha"
+                :merges (list (list :merge t :dir "/tmp/m1" :file "/tmp/m1"
+                                    :title "Merge one" :queue 'running))))
+    (ardentia-dashboard--render)
+    (should (member "Merge one" (ardentia-test--shown)))
+    (ardentia-dashboard-filter-title "alpha")
+    (should-not (member "Merge one" (ardentia-test--shown)))
+    (ardentia-dashboard-filter-title "")
+    (setq ardentia-dashboard--filter-host "beta")
+    (ardentia-dashboard--render)
+    (should-not (member "Merge one" (ardentia-test--shown)))
+    (setq ardentia-dashboard--filter-host "alpha")
+    (ardentia-dashboard--render)
+    (should (member "Merge one" (ardentia-test--shown)))
+    ;; merges belong to the dashboard view only
+    (ardentia-dashboard--switch-view 'review)
+    (should-not (member "Merge one" (ardentia-test--shown)))))
+
+(ert-deftest ardentia-test-list-later-filter ()
+  (ardentia-test--with-list
+    (should (member "Delta" (ardentia-test--shown)))
+    (ardentia-dashboard-toggle-later)
+    (should-not (member "Delta" (ardentia-test--shown)))
+    (should (member "Gamma" (ardentia-test--shown)))
+    ;; only in the dashboard view, and the error names it
+    (dolist (view '(review completed))
+      (ardentia-dashboard--switch-view view)
+      (let ((err (should-error (ardentia-dashboard-toggle-later)
+                               :type 'user-error)))
+        (should (string-match-p "Dashboard" (cadr err)))))
+    ;; the filter persists over the switches
+    (ardentia-dashboard--switch-view 'dashboard)
+    (should-not (member "Delta" (ardentia-test--shown)))
+    (ardentia-dashboard-toggle-later)
+    (should (member "Delta" (ardentia-test--shown)))))
+
+(ert-deftest ardentia-test-list-period-and-state-filters ()
+  (ardentia-test--with-list
+    (dolist (cmd '(ardentia-dashboard-cycle-period ardentia-dashboard-cycle-state))
+      (dolist (view '(dashboard review))
+        (ardentia-dashboard--switch-view view)
+        (let ((err (should-error (funcall cmd) :type 'user-error)))
+          (should (string-match-p "Completed" (cadr err))))))
+    (ardentia-dashboard--switch-view 'completed)
+    ;; period: all -> 30 days (drops Eta, 40 days) -> 7 days (drops Beta, 10)
+    (ardentia-dashboard-cycle-period)
+    (should (equal (ardentia-test--shown) '("Alpha" "Zeta" "Beta")))
+    (ardentia-dashboard-cycle-period)
+    (should (equal (ardentia-test--shown) '("Alpha" "Zeta")))
+    (ardentia-dashboard-cycle-period)                 ; today
+    (should (null (ardentia-test--shown)))
+    (ardentia-dashboard-cycle-period)
+    (should (equal (ardentia-test--shown) '("Alpha" "Zeta" "Beta" "Eta")))
+    ;; state: waiting for review -> accepted -> all
+    (ardentia-dashboard-cycle-state)
+    (should (equal (ardentia-test--shown) '("Alpha" "Beta")))
+    (ardentia-dashboard-cycle-state)
+    (should (equal (ardentia-test--shown) '("Zeta" "Eta")))
+    (ardentia-dashboard-cycle-state)
+    (should (= (length (ardentia-test--shown)) 4))
+    ;; they persist over a switch away and back
+    (ardentia-dashboard-cycle-state)
+    (ardentia-dashboard--switch-view 'dashboard)
+    (should (= (length (ardentia-test--shown)) 5))
+    (ardentia-dashboard--switch-view 'completed)
+    (should (equal (ardentia-test--shown) '("Alpha" "Beta")))))
+
+(ert-deftest ardentia-test-list-period-default-from-option ()
+  (ardentia-test--with-list
+    (let ((ardentia-completed-period 'last-7-days))
+      (ardentia-dashboard--switch-view 'completed)
+      (should (equal (ardentia-test--shown) '("Alpha" "Zeta")))
+      (should (equal (ardentia-dashboard--filter-parts) nil))
+      (ardentia-dashboard-cycle-period)               ; today
+      (should (equal (ardentia-dashboard--filter-parts) '("period today"))))))
+
+(ert-deftest ardentia-test-list-filters-combined-and-cleared ()
+  (ardentia-test--with-list
+    (setq ardentia-dashboard--filter-host "alpha")
+    (ardentia-dashboard-filter-title "a$")
+    (ardentia-dashboard-toggle-later)
+    (should (equal (sort (copy-sequence (ardentia-test--shown)) #'string<)
+                   '("Alpha" "Gamma")))
+    (ardentia-dashboard--switch-view 'completed)
+    (ardentia-dashboard-cycle-state)                  ; waiting for review
+    (should (equal (ardentia-test--shown) '("Alpha")))
+    (ardentia-dashboard-cycle-state)                  ; accepted
+    (should (equal (ardentia-test--shown) '("Zeta")))
+    (ardentia-dashboard-clear-filters)
+    (should (null ardentia-dashboard--filter-host))
+    (should (null ardentia-dashboard--filter-title))
+    (should (eq ardentia-dashboard--state-filter 'all))
+    (should (eq ardentia-dashboard--show-later 'default))
+    (should (= (length (ardentia-test--shown)) 4))
+    (should (null (ardentia-dashboard--filter-parts)))
+    (ardentia-dashboard--switch-view 'dashboard)
+    (should (= (length (ardentia-test--shown)) 5))))
+
+(ert-deftest ardentia-test-list-header-shows-view-and-filters ()
+  (ardentia-test--with-list
+    (should (string-prefix-p " [Dashboard] Review Completed" (ardentia-test--header)))
+    (should-not (string-match-p "filter:" (ardentia-test--header)))
+    (ardentia-dashboard--switch-view 'review)
+    (should (string-prefix-p " Dashboard [Review] Completed" (ardentia-test--header)))
+    (ardentia-dashboard--switch-view 'completed)
+    (should (string-prefix-p " Dashboard Review [Completed] | 4 tasks"
+                             (ardentia-test--header)))
+    (should (string-match-p "Refreshed: never" (ardentia-test--header)))
+    (ardentia-dashboard--switch-view 'dashboard)
+    (setq ardentia-dashboard--filter-host "beta")
+    (ardentia-dashboard-filter-title "rev")
+    (ardentia-dashboard-toggle-later)
+    (should (string-prefix-p
+             " [Dashboard] Review Completed | filter: host beta, /rev/, later hidden"
+             (ardentia-test--header)))
+    ;; a filter that does not apply to a view is not claimed there
+    (ardentia-dashboard--switch-view 'review)
+    (should (string-match-p "| filter: host beta, /rev/ |" (ardentia-test--header)))
+    (ardentia-dashboard--switch-view 'completed)
+    (ardentia-dashboard-cycle-state)
+    (ardentia-dashboard-cycle-period)
+    (should (string-match-p
+             "| filter: host beta, /rev/, period last 30 days, state waiting for review |"
+             (ardentia-test--header)))
+    ;; the view indicator is part of the narrow layout: the first segment
+    (pcase-let ((`(,count ,compact ,lines) (ardentia-dashboard--layout 40)))
+      (should compact)
+      (should (>= count 1))
+      (should (equal (substring-no-properties
+                      (car (ardentia-dashboard--info-segments nil t)))
+                     " Dashboard Review [Completed]"))
+      (should lines))))
+
+(ert-deftest ardentia-test-list-header-completed-error-and-refreshing ()
+  (ardentia-test--with-list
+    (ardentia-dashboard--switch-view 'completed)
+    (setq ardentia-dashboard--completed-error "boom"
+          ardentia-dashboard--completed-refreshing t)
+    (should (string-match-p "ERROR: boom | refreshing\\.\\.\\.\\'"
+                            (ardentia-test--header)))))
+
+(ert-deftest ardentia-test-list-completed-fetch-and-failure ()
+  (let* ((dir (make-temp-file "ardentia-fake-" t))
+         (ardentia-org-directory dir)
+         (ardentia-org-tool (expand-file-name "ai/tools/org-tool" dir))
+         (ardentia--state (list :tasks nil :host "alpha"))
+         (buf (get-buffer-create " *ardentia-test-fetch*")))
+    (ardentia-test--with-timer-sandbox
+     (unwind-protect
+         (with-current-buffer buf
+           (ardentia-test--fake-env dir)
+           (ardentia-dashboard-mode)
+           (ardentia-dashboard--render)
+           ;; no fetch in the other views
+           (ardentia-dashboard--switch-view 'review)
+           (should-not ardentia-dashboard--completed-refreshing)
+           ;; switching in fetches, asynchronously
+           (ardentia-dashboard--switch-view 'completed)
+           (should ardentia-dashboard--completed-refreshing)
+           (should (string-match-p "refreshing" (ardentia-test--header)))
+           (ardentia-test--wait (lambda () (not ardentia-dashboard--completed-refreshing)))
+           (should (null ardentia-dashboard--completed-error))
+           (should (equal (mapcar (lambda (x) (plist-get x :title))
+                                  ardentia-dashboard--completed-tasks)
+                          '("Review me" "Finished" "Plain")))
+           (should (= (length (ardentia-test--shown)) 3))
+           (should (member "Finished" (ardentia-test--shown)))
+           ;; a failing fetch keeps the old list and reports in the header
+           (setq ardentia-org-tool (expand-file-name "ai/tools/fail-tool" dir))
+           (ardentia-dashboard--completed-refresh)
+           (ardentia-test--wait (lambda () (not ardentia-dashboard--completed-refreshing)))
+           (should (string-match-p "failed: boom" ardentia-dashboard--completed-error))
+           (should (string-match-p "ERROR: org-tool humanreview failed: boom"
+                                   (ardentia-test--header)))
+           (should (= (length (ardentia-test--shown)) 3))
+           ;; the next good fetch clears the error
+           (setq ardentia-org-tool (expand-file-name "ai/tools/org-tool" dir))
+           (ardentia-dashboard--completed-refresh)
+           (ardentia-test--wait (lambda () (not ardentia-dashboard--completed-refreshing)))
+           (should (null ardentia-dashboard--completed-error)))
+       (kill-buffer buf)
+       (delete-directory dir t)))))
+
+(ert-deftest ardentia-test-list-refresh-all-fetches-completed-only-there ()
+  "`g' and the timer tick fetch the completed data while in that view."
+  (ardentia-test--with-list
+    (let ((fetches 0))
+      (cl-letf (((symbol-function 'ardentia-dashboard--completed-refresh)
+                 (lambda () (cl-incf fetches)))
+                ((symbol-function 'ardentia-refresh) #'ignore)
+                ((symbol-function 'ardentia-usage-maybe-refresh) #'ignore))
+        (ardentia-dashboard-refresh-all)
+        (should (= fetches 0))
+        (ardentia-dashboard--switch-view 'completed)
+        (should (= fetches 1))                    ; the switch
+        (ardentia-dashboard-refresh-all)
+        (should (= fetches 2))))))
+
+(ert-deftest ardentia-test-list-older-buffer-without-view ()
+  "A buffer made by code without views renders as dashboard or review."
+  (ardentia-test--with-list
+    (setq ardentia-dashboard--view nil
+          ardentia-dashboard--format-kind nil)
+    (ardentia-dashboard--render)
+    (should (eq (ardentia-dashboard--view-now) 'dashboard))
+    (should (= (length (ardentia-test--shown)) 5))
+    (should (string-prefix-p " [Dashboard]" (ardentia-test--header)))
+    (should (equal (car (aref tabulated-list-format 0)) "Queue"))
+    ;; the old review inbox: filter = review, no view
+    (setq ardentia-dashboard--view nil
+          ardentia-dashboard--format-kind nil
+          ardentia-dashboard--filter 'review)
+    (ardentia-dashboard--render)
+    (should (equal (sort (copy-sequence (ardentia-test--shown)) #'string<)
+                   '("Alpha" "Beta")))
+    (should (string-prefix-p " Dashboard [Review]" (ardentia-test--header)))
+    ;; a stale format of the other kind is replaced
+    (setq ardentia-dashboard--view nil
+          ardentia-dashboard--filter nil
+          ardentia-dashboard--format-kind nil
+          tabulated-list-format (copy-tree ardentia-completed--format t))
+    (ardentia-dashboard--render)
+    (should (equal (car (aref tabulated-list-format 0)) "Queue"))
+    (should (= (length (ardentia-test--shown)) 5))))
+
+(ert-deftest ardentia-test-list-commands-share-one-buffer ()
+  (ardentia-test--with-timer-sandbox
+   (let ((ardentia--state (list :tasks (ardentia-test--open-tasks) :host "alpha"))
+         (refreshes 0))
+     (when (get-buffer "*ardentia*") (kill-buffer "*ardentia*"))
+     (unwind-protect
+         (cl-letf (((symbol-function 'pop-to-buffer-same-window) #'ignore)
+                   ((symbol-function 'ardentia-dashboard-refresh-all)
+                    (lambda () (cl-incf refreshes)))
+                   ((symbol-function 'ardentia-dashboard--completed-refresh)
+                    #'ignore))
+           (ardentia-review-inbox)
+           (let ((buf (get-buffer "*ardentia*")))
+             (should buf)
+             (should (= refreshes 1))
+             (with-current-buffer buf
+               (should (derived-mode-p 'ardentia-dashboard-mode))
+               (should (eq (ardentia-dashboard--view-now) 'review)))
+             (ardentia-completed)
+             (should (eq (get-buffer "*ardentia*") buf))
+             (should (eq (buffer-local-value 'ardentia-dashboard--view buf)
+                         'completed))
+             (ardentia-dashboard)
+             (should (eq (buffer-local-value 'ardentia-dashboard--view buf)
+                         'dashboard))
+             (should (= refreshes 3))
+             ;; from inside the buffer the shared data is current: no refresh
+             (with-current-buffer buf
+               (ardentia-review-inbox)
+               (should (= refreshes 3))
+               (should (eq (ardentia-dashboard--view-now) 'review)))
+             (should-not (get-buffer "*ardentia-review*"))
+             (should-not (get-buffer "*ardentia-completed*"))
+             (should (timerp ardentia-dashboard--refresh-timer))))
+       (when (get-buffer "*ardentia*") (kill-buffer "*ardentia*"))))))
+
+(ert-deftest ardentia-test-list-accept-and-send-back-refuse-accepted ()
+  (ardentia-test--with-list
+    (ardentia-dashboard--switch-view 'completed)
+    (cl-letf (((symbol-function 'y-or-n-p)
+               (lambda (&rest _) (ert-fail "must not ask")))
+              ((symbol-function 'read-string)
+               (lambda (&rest _) (ert-fail "must not ask")))
+              ((symbol-function 'ardentia-accept-1)
+               (lambda (&rest _) (ert-fail "must not accept")))
+              ((symbol-function 'ardentia-send-back-1)
+               (lambda (&rest _) (ert-fail "must not send back"))))
+      (ardentia-test--goto "Zeta")
+      (dolist (cmd '(ardentia-dashboard-accept ardentia-dashboard-send-back))
+        (let ((err (should-error (funcall cmd) :type 'user-error)))
+          (should (string-match-p "already accepted" (cadr err))))))
+    ;; an open task of the same view can be accepted
+    (let (accepted)
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                ((symbol-function 'ardentia-accept-1)
+                 (lambda (file id) (setq accepted (list file id)))))
+        (ardentia-test--goto "Alpha")
+        (ardentia-dashboard-accept)
+        (should (equal accepted '("/o/l.org" "id-alpha")))))))
+
+(ert-deftest ardentia-test-list-enter-opens-accepted-review ()
+  (ardentia-test--with-list
+    (ardentia-dashboard--switch-view 'completed)
+    (ardentia-test--goto "Zeta")
+    (let (opened)
+      (cl-letf (((symbol-function 'ardentia-review-task)
+                 (lambda (task) (setq opened (plist-get task :title)))))
+        (ardentia-dashboard-enter))
+      (should (equal opened "Zeta")))))
+
+(ert-deftest ardentia-test-list-ready-without-id-through-the-list ()
+  "A ready task without :ID: is found by line and title from the list."
+  (ardentia-test--with-org-file f "* TODO Other\n* TODO Fresh :aiready:\nbody\n"
+    (ardentia-test--with-timer-sandbox
+     (let ((ardentia--state
+            (list :tasks (list (list :file f :id nil :line 2 :title "Fresh"
+                                     :queue 'ready :tags '("aiready")
+                                     :props nil))
+                  :host "alpha"))
+           (buf (get-buffer-create " *ardentia-test-noid*")))
+       (unwind-protect
+           (with-current-buffer buf
+             (ardentia-dashboard-mode)
+             (ardentia-dashboard--render)
+             (ardentia-test--goto "Fresh")
+             (cl-letf (((symbol-function 'ardentia-dashboard-refresh-all) #'ignore))
+               (ardentia-dashboard-priority-up))
+             (should (string-match-p "^\\* TODO \\[#C\\] Fresh :aiready:$"
+                                     (ardentia-test--file-text f))))
+         (kill-buffer buf))))))
+
+(ert-deftest ardentia-test-list-filter-menu-shows-values ()
+  (ardentia-test--with-list
+    (let ((desc (lambda (key)
+                  (let ((suffix (transient-get-suffix
+                                 'ardentia-dashboard-filter-menu key)))
+                    (plist-get (if (consp (car (last suffix))) (car (last suffix))
+                                 (cdr suffix))
+                               :description)))))
+      (setq ardentia-dashboard--filter-host "beta")
+      (ardentia-dashboard-filter-title "x")
+      (should (equal (funcall (funcall desc "h")) "Host: beta"))
+      (should (equal (funcall (funcall desc "/")) "Title: /x/"))
+      (should (equal (funcall (funcall desc "l")) "Later tasks: shown"))
+      (should (equal (funcall (funcall desc "P")) "Period: all"))
+      (should (equal (funcall (funcall desc "w")) "State: all"))
+      ;; greyed out where a filter does not apply
+      (should-not (ardentia-dashboard--menu-inapt-p 'dashboard))
+      (should (ardentia-dashboard--menu-inapt-p 'completed))
+      (ardentia-dashboard--switch-view 'completed)
+      (should (ardentia-dashboard--menu-inapt-p 'dashboard))
+      (should-not (ardentia-dashboard--menu-inapt-p 'completed))
+      (should (eq (ardentia-test--suffix-command 'ardentia-dashboard-filter-menu "c")
+                  'ardentia-dashboard-clear-filters))
+      (should (eq (ardentia-test--suffix-command 'ardentia-dashboard-menu "f")
+                  'ardentia-dashboard-filter-menu)))))
 
 (provide 'ardentia-test)
 ;;;; Usage
@@ -3248,7 +3802,9 @@ otherwise.  It logs the arguments, and the stdin text of a send."
          (ardentia-usage--state nil)
          (st (ardentia-test--layout-state))
          (segs (ardentia-dashboard--info-segments st)))
-    (should (string-prefix-p " Host: desktop" (car segs)))
+    (should (equal (substring-no-properties (car segs))
+                   " [Dashboard] Review Completed"))
+    (should (string-prefix-p " | Host: desktop" (cadr segs)))
     (dolist (seg (cdr segs))
       (should (string-prefix-p " | " seg)))
     (should (equal (apply #'concat segs)
@@ -3290,7 +3846,7 @@ otherwise.  It logs the arguments, and the stdin text of a send."
                         (concat head (apply #'concat lines)))
                        (ardentia-test--squash (apply #'concat segs))))))
     (let ((segs (ardentia-dashboard--info-segments st t)))
-      (should (equal (cadr segs) " | Timer last: 08:45 next: 09:00"))
+      (should (equal (nth 2 segs) " | Timer last: 08:45 next: 09:00"))
       (should (= (length (ardentia-dashboard--layout 30 st))
                  3)))))
 
@@ -3311,10 +3867,12 @@ otherwise.  It logs the arguments, and the stdin text of a send."
     (let ((ardentia-dashboard--layout-cache nil))
       (should (string-match-p "5h 42%% (resets "
                               (ardentia-dashboard--header-line))))
-    (let ((ardentia-dashboard--layout-cache '(2 . t)))
+    (let ((ardentia-dashboard--layout-cache '(3 . t)))
       (let ((line (ardentia-dashboard--header-line)))
         (should (equal (substring-no-properties line)
-                       " Host: desktop | Timer last: 08:45 next: 09:00"))))))
+                       (concat " [Dashboard] Review Completed"
+                               " | Host: desktop"
+                               " | Timer last: 08:45 next: 09:00")))))))
 
 (ert-deftest ardentia-test-update-layout-overlay ()
   (let* ((ardentia-usage-enabled t)
@@ -3478,9 +4036,8 @@ Uses `transient-get-suffix' and copes with both suffix shapes (object, or
           (t (eieio-oref suffix 'command)))))
 
 (defconst ardentia-test--menus
-  '((ardentia-dashboard-mode-map ardentia-dashboard-menu 15)
+  '((ardentia-dashboard-mode-map ardentia-dashboard-menu 25)
     (ardentia-review-mode-map ardentia-review-menu 7)
-    (ardentia-completed-mode-map ardentia-completed-menu 7)
     (ardentia-knowledge-mode-map ardentia-knowledge-menu 5)
     (ardentia-agents-mode-map ardentia-agents-menu 3)
     (ardentia-session-mode-map ardentia-session-menu 9))
@@ -3545,7 +4102,7 @@ Bindings inherited from a parent keymap are not included."
           (setq n (1+ n))
           (should (memq (cdr a) cmds))
           (should (eq (keymap-lookup (symbol-value map-sym) (car a)) (cdr a))))))
-    (should (= n 4))))
+    (should (= n 6))))
 
 ;;;; The "For you" line of the run report
 

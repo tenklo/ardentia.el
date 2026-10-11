@@ -120,9 +120,9 @@ while `ardentia-mode-line-mode` is on.
 | Command                  | What it does                                         |
 |--------------------------|------------------------------------------------------|
 | `ardentia`               | Transient menu (d r c k a n D g m, x in org buffers)  |
-| `ardentia-dashboard`     | All queues in `*ardentia*`: trouble, review, running, ready, later |
-| `ardentia-review-inbox`  | Same view, only tasks waiting for review             |
-| `ardentia-completed`     | All tasks handed back, accepted or not, with tokens and cost in `*ardentia-completed*` |
+| `ardentia-dashboard`     | Task list `*ardentia*` in its dashboard view: trouble, review, running, ready, later |
+| `ardentia-review-inbox`  | The same buffer in its review view: only tasks waiting for review |
+| `ardentia-completed`     | The same buffer in its completed view: all tasks handed back, accepted or not, with tokens and cost |
 | `ardentia-knowledge`     | Read-only list of the knowledge files in `*ardentia knowledge*`; large files are grepped, not opened |
 | `ardentia-agents`        | Read-only list of the agent definitions with model, tools and limits in `*ardentia agents*` |
 | `ardentia-review-task`   | Read-only org view of one task (run report, notes, child sections) |
@@ -138,12 +138,37 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-session-stop` | Session transcript: stop the task of this transcript |
 | `ardentia-dashboard-priority` | Dashboard: set the priority of the ready or later task at point (SPC removes it) |
 | `ardentia-dashboard-priority-up` / `-down` | Dashboard: raise or lower that priority |
-| `ardentia-dashboard-menu`, `ardentia-review-menu`, `ardentia-completed-menu`, `ardentia-knowledge-menu`, `ardentia-agents-menu`, `ardentia-session-menu` | `?` in the respective buffer: transient menu listing every key of that buffer, grouped, under the same key; `.` opens `ardentia` (also directly in every buffer) |
+| `ardentia-dashboard-menu`, `ardentia-review-menu`, `ardentia-knowledge-menu`, `ardentia-agents-menu`, `ardentia-session-menu` | `?` in the respective buffer: transient menu listing every key of that buffer (the task list: groups View and Filter among them), grouped, under the same key; `.` opens `ardentia` (also directly in every buffer) |
 
-### Keys in the dashboard
+### Keys in the task list
 
-`g` refresh (asynchronous; visible dashboards also refresh by themselves every
-`ardentia-dashboard-refresh-interval` seconds), `RET` open (review buffer for a review task,
+There is one task list buffer, `*ardentia*`. `ardentia-dashboard`,
+`ardentia-review-inbox` and `ardentia-completed` all show that buffer and
+switch it to a view; filters stay set across views.
+
+Views (all views):
+`1` dashboard (all open queues), `2` review (tasks waiting for review),
+`3` completed (everything handed back, see below), `TAB` / `<backtab>` next /
+previous view (cyclic), `c` and `r` are aliases for completed and review.
+The header line starts with the views, the active one in brackets. Each view
+remembers the row you were on.
+
+Filters (they show in the header line while not at their default):
+- `h` host: cycles all, this computer, the other hosts of `ardentia-hosts`
+- `/` title regexp (case-insensitive; empty input clears it)
+- `l` later tasks shown or hidden (dashboard view only)
+- `P` period: all, last 30 days, last 7 days, today (completed view only;
+  by `AI_SESSION`, so tasks without it only show under all)
+- `w` state: all, waiting for review, accepted (completed view only)
+- `f` transient with all filters, their current values and `c` to clear them
+  all; filters that do not apply to the view are greyed out
+- a filter key in the wrong view signals an error naming the view it belongs to
+- `n` / `p` stay line navigation
+
+Other keys:
+`g` refresh (asynchronous; visible task lists also refresh by themselves every
+`ardentia-dashboard-refresh-interval` seconds; the completed view fetches its
+data again each time), `RET` open (review buffer for a review task,
 session transcript for a running task, an error for other queues),
 `t` session transcript of the task in any queue (the latest run),
 `A` join the running session (see Session transcripts) or, for other tasks,
@@ -153,8 +178,10 @@ raise/lower it (ready and later tasks only),
 (also on freshly captured tasks that have no `:ID:` yet: the heading is
 found by its line or, failing that, by its unique title; `x` creates the
 ID and saves the file first),
-`a` accept, `s` send back, `l` hide or show later tasks, `d` toggle the due flag between time left and due date, `x` run the ready
-or later task now, `k` stop the running task at point, `c` completed tasks overview, `u` fetch the usage now, `q` quit, `?` menu of all keys of this buffer
+`a` accept, `s` send back (both refuse a task that is already accepted),
+`d` toggle the due flag between time left and due date, `x` run the ready
+or later task now, `k` stop the running task at point, `u` fetch the usage now,
+`S` sort by column, `q` quit, `?` menu of all keys of this buffer
 (`ardentia-dashboard-menu`, grouped, same keys; `.` opens the global menu, as it does directly in the buffer).
 A refresh keeps point and scroll position on the same task.
 The Cost column shows `AI_COST_USD_TOTAL` for every task that has it.
@@ -246,13 +273,13 @@ is waiting for its limit to reset, the pause:
   keeps as many parts as fit. The remaining parts move into lines at the
   top of the buffer, and the layout follows window resizes.
 
-### Keys in the completed view
+### The completed view
 
-`ardentia-completed` (`c` in the menu and in the dashboard) lists every
+The completed view (`3`, `c` in the menu, `ardentia-completed`) lists every
 heading tagged `:humanreview:`, still waiting for review as well as
 accepted (DONE, CANC; accepting keeps the tag). It fetches
-asynchronously with its own `org-tool find-tagged humanreview` call;
-errors show in the header line. The columns are Finished (`AI_SESSION`),
+asynchronously with its own `org-tool find-tagged humanreview` call when you switch to it and on every refresh;
+a failed fetch keeps the old list and shows the error in the header line. The columns are Finished (`AI_SESSION`),
 State (the TODO keyword: DONE or CANC means accepted), Status
 (`AI_STATUS`), Host (`AI_CLAIMED_BY`), Runs (`AI_USAGE_RUNS`), Tokens
 (`AI_TOKENS_TOTAL`, as 950, 12.3k, 5.4M), Cost (`AI_COST_USD_TOTAL`),
@@ -264,13 +291,6 @@ The header line shows the number of tasks shown with the split into
 completed, blocked and partial, the summed tokens and cost with
 "(N with usage data)" (only tasks that carry usage properties add to the
 sums), the period, the time of the last refresh and an error if any.
-
-`g` refresh, `RET` review buffer (also for accepted tasks), `t` session
-transcript, `o` visit the heading, `p` cycle the period (all, last 30
-days, last 7 days, today; by `AI_SESSION`, so tasks without it only show
-under all), `r` toggle between all tasks and only those still waiting for
-review, `q` quit, `?` menu of all keys of this buffer
-(`ardentia-completed-menu`; `.` opens the global menu, as it does directly in the buffer).
 
 ### Knowledge and agent browsers
 
@@ -475,8 +495,8 @@ next refresh.
 - `ardentia-actions.el` mutations in the visiting buffer
 - `ardentia-review.el` review buffer
 - `ardentia-session.el` session transcript viewer, optional agent-shell
-- `ardentia-dashboard.el` dashboard and review inbox
-- `ardentia-completed.el` overview of completed tasks with tokens and cost
+- `ardentia-dashboard.el` the task list buffer with its dashboard, review and completed views, filters
+- `ardentia-completed.el` data side of the completed view: fetch, period, state, sorting, totals
 - `ardentia-browse.el` read-only browsers for knowledge files and agents
 - `ardentia-capture.el` new task and delegate
 - `ardentia-run.el` start the runner on one task now

@@ -1,4 +1,4 @@
-;;; ardentia-dashboard.el --- Dashboard and review inbox for ardentia -*- lexical-binding: t -*-
+;;; ardentia-dashboard.el --- The task list of ardentia: dashboard, review, completed -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2026 Karsten Klöss
 
@@ -25,16 +25,29 @@
 
 ;;; Commentary:
 
-;; `ardentia-dashboard' lists the agent queues (trouble, review, running, ready,
-;; later) in a `tabulated-list-mode' buffer.  The trouble group holds the
-;; open tasks tagged for errors or sync problems and the running Syncthing
-;; merges; it is absent when there is nothing in it.
-;; `ardentia-review-inbox' is the same view filtered to the review queue.
+;; There is one task list buffer, `*ardentia*', in `ardentia-dashboard-mode'.
+;; It shows one of three views of the same tasks:
+;;
+;; - dashboard: the open agent queues (trouble, review, running, ready,
+;;   later).  The trouble group holds the open tasks tagged for errors or
+;;   sync problems and the running Syncthing merges; it is absent when
+;;   there is nothing in it.  `ardentia-dashboard' shows this view.
+;; - review: only the tasks waiting for review, `ardentia-review-inbox'.
+;; - completed: every task the agents handed back, accepted or not, with
+;;   tokens and cost, `ardentia-completed'.  The shared state drops done
+;;   tasks, so this view keeps its own list, fetched when you switch to it
+;;   and on every refresh while you are in it.
+;;
+;; The keys 1, 2, 3, TAB and S-TAB switch the view.  The filters (host,
+;; title, later tasks, period, state) belong to the buffer, persist over
+;; view switches and apply where they make sense; `f' shows them all.
 ;; Refreshing is asynchronous.
 ;;
-;; The header line shows host, timer, refresh time and usage.  In a narrow
-;; window the timer times are shortened and what still does not fit moves
-;; into lines at the top of the buffer.
+;; The header line starts with the view indicator, then lists the active
+;; filters, then host, timer, refresh time and usage (completed view: the
+;; totals and the refresh time of its own fetch).  In a narrow window the
+;; timer times are shortened and what still does not fit moves into lines
+;; at the top of the buffer.
 
 ;;; Code:
 
@@ -47,13 +60,78 @@
 (require 'ardentia-session)
 (require 'ardentia-run)
 (require 'ardentia-usage)
+(require 'ardentia-completed)
 
 (declare-function ardentia "ardentia" ())
-(declare-function ardentia-completed "ardentia-completed" ())
 (declare-function dired "dired" (dirname &optional switches))
 
 (defvar-local ardentia-dashboard--filter nil
-  "Queue symbol this dashboard buffer is restricted to, or nil for all.")
+  "Legacy queue filter of buffers made before the views existed.
+Only read when `ardentia-dashboard--view' is unset: `review' then means
+the review view.  Nothing sets it any more.")
+
+(defconst ardentia-dashboard--views '(dashboard review completed)
+  "The views of the task list, in the order TAB cycles through them.")
+
+(defconst ardentia-dashboard--view-labels
+  '((dashboard . "Dashboard") (review . "Review") (completed . "Completed"))
+  "Alist of view and the name the view indicator shows.")
+
+(defvar-local ardentia-dashboard--view nil
+  "The view this buffer shows, one of `ardentia-dashboard--views', or nil.
+Nil means a buffer made by older code; `ardentia-dashboard--view-now'
+then derives the view from `ardentia-dashboard--filter'.")
+
+(defvar-local ardentia-dashboard--format-kind nil
+  "Which column format is installed: `dashboard' or `completed', or nil.
+Nil (a buffer of older code) makes the next render install the format.")
+
+(defvar-local ardentia-dashboard--view-points nil
+  "Alist of view and the row key that had point when the view was left.")
+
+(defvar-local ardentia-dashboard--filter-host nil
+  "Host filter of this buffer: a host name, or nil for all hosts.")
+
+(defvar-local ardentia-dashboard--filter-title nil
+  "Title filter of this buffer: a regexp string, or nil for no filter.")
+
+(defvar-local ardentia-dashboard--period 'default
+  "Period filter of the completed view, or `default' for the option.
+The option is `ardentia-completed-period'.")
+
+(defvar-local ardentia-dashboard--state-filter 'all
+  "State filter of the completed view: `all', `review' or `accepted'.")
+
+(defvar-local ardentia-dashboard--completed-tasks nil
+  "All tasks fetched by the last successful completed fetch of this buffer.")
+
+(defvar-local ardentia-dashboard--completed-time nil
+  "Time of the last completed fetch (successful or not) of this buffer.")
+
+(defvar-local ardentia-dashboard--completed-error nil
+  "Error text of the last completed fetch of this buffer, or nil.")
+
+(defvar-local ardentia-dashboard--completed-refreshing nil
+  "Non-nil while this buffer waits for a completed fetch.")
+
+(defvar-local ardentia-dashboard--completed-summary nil
+  "Totals text of the completed rows shown by the last render, or nil.")
+
+(defconst ardentia-dashboard--format
+  [("Queue" 8 nil) ("Status" 10 nil) ("Host" 10 nil) ("Att" 4 nil)
+   ("Age" 5 nil) ("Flags" 16 nil) ("Cost" 7 nil :right-align t)
+   ("File" 18 nil) ("Title" 0 nil)]
+  "The `tabulated-list-format' of the dashboard and review views.
+Treat it as read-only; buffers get a copy.")
+
+(defun ardentia-dashboard--view-now ()
+  "Return the view of the current buffer.
+An unset view, as in a buffer made by older code, is `review' when the old
+`ardentia-dashboard--filter' says so, else `dashboard'."
+  (cond ((memq ardentia-dashboard--view ardentia-dashboard--views)
+         ardentia-dashboard--view)
+        ((eq ardentia-dashboard--filter 'review) 'review)
+        (t 'dashboard)))
 
 (defun ardentia-dashboard--short-time (stamp &optional now)
   "Shorten the systemd time STAMP to `HH:MM' or `Ddd HH:MM'.
@@ -155,6 +233,11 @@ Nil shows plain text.  Takes effect on the next refresh."
   "Host, age, cost and file columns."
   :group 'ardentia-faces)
 
+(defface ardentia-view-active
+  '((t :inherit font-lock-function-name-face :weight normal))
+  "The active view in the view indicator of the header line."
+  :group 'ardentia-faces)
+
 (defvar org-priority-highest)
 
 (defun ardentia-dashboard--add-face (string face &optional start end)
@@ -241,12 +324,58 @@ Strings of ROW and TASK are never modified.  Without
                        0 (match-end 0)))))
       out)))
 
+(defun ardentia-dashboard--view-segment ()
+  "Return the view indicator, the first segment of the header line.
+It lists all views with the active one in brackets, like
+\" [Dashboard] Review Completed\"."
+  (let ((view (ardentia-dashboard--view-now)))
+    (concat
+     " "
+     (mapconcat
+      (lambda (v)
+        (let ((label (alist-get v ardentia-dashboard--view-labels)))
+          (if (eq v view)
+              (ardentia-dashboard--maybe-face (format "[%s]" label)
+                                              'ardentia-view-active)
+            (ardentia-dashboard--maybe-face label 'ardentia-dashboard-meta))))
+      ardentia-dashboard--views " "))))
+
+(defun ardentia-dashboard--filter-segments ()
+  "Return the segment listing the active filters of the view, or nil."
+  (when-let* ((parts (ardentia-dashboard--filter-parts)))
+    (list (ardentia-dashboard--maybe-face
+           (concat " | filter: " (string-join parts ", "))
+           'ardentia-flag-attention))))
+
+(defun ardentia-dashboard--completed-segments (&optional _compact)
+  "Return the header segments of the completed view after the filters.
+They are the totals of the rows shown and the state of its own fetch."
+  (append
+   (mapcar (lambda (part) (concat " | " part))
+           (split-string (or ardentia-dashboard--completed-summary
+                             (ardentia-completed--summary nil))
+                         " | " t "[ ]+"))
+   (list (format " | Refreshed: %s"
+                 (if ardentia-dashboard--completed-time
+                     (format-time-string "%H:%M:%S"
+                                         ardentia-dashboard--completed-time)
+                   "never")))
+   (and ardentia-dashboard--completed-error
+        (list (ardentia-dashboard--maybe-face
+               (format " | ERROR: %s" ardentia-dashboard--completed-error)
+               'ardentia-flag-trouble)))
+   (and ardentia-dashboard--completed-refreshing
+        (list (ardentia-dashboard--maybe-face " | refreshing..."
+                                              'ardentia-flag-info)))))
+
 (defun ardentia-dashboard--info-segments (&optional state compact now)
   "Return the info line from STATE as a list of strings.
-The first is \" Host: X\", every further one starts with \" | \".  With
-COMPACT the timer times are shortened (see
-`ardentia-dashboard--short-time', relative to NOW).  STATE defaults to
-`ardentia--state'."
+The first is the view indicator, \" [Dashboard] Review Completed\", every
+further one starts with \" | \".  Then come the active filters and the
+data of the view: host, timer, refresh time and usage, or in the completed
+view its totals and refresh time.  With COMPACT the timer times are
+shortened (see `ardentia-dashboard--short-time', relative to NOW).  STATE
+defaults to `ardentia--state'."
   (let* ((st (or state ardentia--state))
          (timer (plist-get st :timer))
          (time (plist-get st :time))
@@ -259,19 +388,24 @@ COMPACT the timer times are shortened (see
       (setq last (ardentia-dashboard--short-time last now)
             next (ardentia-dashboard--short-time next now)))
     (append
-     (list (format " Host: %s" (or (plist-get st :host) "unknown"))
-           (format " | Timer last: %s next: %s" last next)
-           (format " | Refreshed: %s"
-                   (if time (format-time-string "%H:%M:%S" time) "never")))
-     (and (plist-get st :error)
-          (list (ardentia-dashboard--maybe-face
-                 (format " | ERROR: %s" (plist-get st :error))
-                 'ardentia-flag-trouble)))
-     (and (plist-get st :refreshing)
-          (list (ardentia-dashboard--maybe-face " | refreshing..."
-                                                'ardentia-flag-info)))
-     (mapcar (lambda (part) (concat " | " part))
-             (split-string usage " | " t)))))
+     (list (ardentia-dashboard--view-segment))
+     (ardentia-dashboard--filter-segments)
+     (if (eq (ardentia-dashboard--view-now) 'completed)
+         (ardentia-dashboard--completed-segments compact)
+       (append
+        (list (format " | Host: %s" (or (plist-get st :host) "unknown"))
+              (format " | Timer last: %s next: %s" last next)
+              (format " | Refreshed: %s"
+                      (if time (format-time-string "%H:%M:%S" time) "never")))
+        (and (plist-get st :error)
+             (list (ardentia-dashboard--maybe-face
+                    (format " | ERROR: %s" (plist-get st :error))
+                    'ardentia-flag-trouble)))
+        (and (plist-get st :refreshing)
+             (list (ardentia-dashboard--maybe-face " | refreshing..."
+                                                   'ardentia-flag-info)))
+        (mapcar (lambda (part) (concat " | " part))
+                (split-string usage " | " t)))))))
 
 (defun ardentia-dashboard--info-line (&optional state)
   "Return the full header line text from STATE (default `ardentia--state')."
@@ -379,7 +513,7 @@ This is the smallest window width over all windows showing the buffer."
   "Non-nil means the dashboard lists ready tasks that are not yet due.
 Those are :aiready: tasks whose SCHEDULED time still lies ahead; the
 runner leaves them alone until then.  They show up as queue \"later\".
-The key `l' toggles this per dashboard buffer."
+The key `l' toggles this per task list buffer, in the dashboard view."
   :type 'boolean
   :group 'ardentia)
 
@@ -453,11 +587,96 @@ tasks never.  MERGES, the running merge rows, are added when FILTER is nil."
             (and (null filter) merges))
            now)))
 
+;;;; Filters
+
+(defun ardentia-dashboard--period-now ()
+  "Return the period filter of this buffer, the option as long as unset."
+  (if (eq ardentia-dashboard--period 'default)
+      ardentia-completed-period
+    ardentia-dashboard--period))
+
+(defun ardentia-dashboard--filter-parts (&optional view)
+  "Return the active filters of VIEW (default: this buffer's) as strings.
+Only filters that apply in the view count, and only those that differ
+from their defaults.  The result is nil when the view is unfiltered."
+  (let ((view (or view (ardentia-dashboard--view-now))))
+    (delq nil
+          (list
+           (and ardentia-dashboard--filter-host
+                (format "host %s" ardentia-dashboard--filter-host))
+           (and ardentia-dashboard--filter-title
+                (format "/%s/" ardentia-dashboard--filter-title))
+           (and (eq view 'dashboard)
+                (not (eq (and (ardentia-dashboard--show-later-p) t)
+                         (and ardentia-dashboard-show-later t)))
+                (if (ardentia-dashboard--show-later-p)
+                    "later shown" "later hidden"))
+           (and (eq view 'completed)
+                (not (eq (ardentia-dashboard--period-now)
+                         ardentia-completed-period))
+                (format "period %s" (ardentia-completed--period-label
+                                     (ardentia-dashboard--period-now))))
+           (and (eq view 'completed)
+                (not (eq ardentia-dashboard--state-filter 'all))
+                (format "state %s" (ardentia-completed--state-label
+                                    ardentia-dashboard--state-filter)))))))
+
+(defun ardentia-dashboard--title-match-p (regexp title)
+  "Return non-nil when TITLE matches REGEXP, ignoring case; nil REGEXP matches."
+  (or (null regexp)
+      (let ((case-fold-search t))
+        (string-match-p regexp (or title "")))))
+
+(defun ardentia-dashboard--task-host-name (task default-host)
+  "Return the host TASK counts for in the host filter.
+That is `ardentia--task-host': the host that claimed the task (also for a
+completed one), else the NAME of a NAME_only tag, else the default host.
+DEFAULT-HOST, the one of the hosts file, stands for what the Host column
+shows as \"default\"; it may be nil."
+  (let ((host (ardentia--task-host task)))
+    (if (and (equal host "default") default-host) default-host host)))
+
+(defun ardentia-dashboard--filter-tasks (tasks host title default-host)
+  "Return the TASKS that pass the HOST and TITLE filters.
+Either filter nil lets everything pass.  See
+`ardentia-dashboard--task-host-name' for DEFAULT-HOST."
+  (if (not (or host title))
+      tasks
+    (seq-filter (lambda (task)
+                  (and (or (null host)
+                           (equal host (ardentia-dashboard--task-host-name
+                                        task default-host)))
+                       (ardentia-dashboard--title-match-p
+                        title (plist-get task :title))))
+                tasks)))
+
+(defun ardentia-dashboard--filter-merges (merges host title local-host)
+  "Return the running MERGES that pass the HOST and TITLE filters.
+A merge runs on the local host, LOCAL-HOST."
+  (seq-filter (lambda (merge)
+                (and (or (null host) (equal host local-host))
+                     (ardentia-dashboard--title-match-p
+                      title (plist-get merge :title))))
+              merges))
+
+(defun ardentia-dashboard--next-host (current local hosts)
+  "Return the host filter after CURRENT: all (nil), LOCAL, then HOSTS.
+CURRENT is nil or a host name.  LOCAL may be nil.  A CURRENT that is in
+none of them goes back to all."
+  (let* ((choices (cons nil (delete-dups
+                             (append (and local (list local))
+                                     (copy-sequence hosts)))))
+         (rest (cdr (member current choices))))
+    (if (and (member current choices) rest) (car rest) (car choices))))
+
+;;;; Keys
+
 (ardentia-define-keys-and-menu
     ardentia-dashboard-mode-map ardentia-dashboard-menu
   :keymap-doc "Keymap for `ardentia-dashboard-mode'."
-  :menu-doc "Keys of the ardentia dashboard.
-Also bound: S-<up> and S-<down> (priority up and down)."
+  :menu-doc "Keys of the ardentia task list.
+Also bound: S-<up> and S-<down> (priority up and down), c (completed
+view) and r (review view)."
   :groups
   (("Task at point"
     ("RET" "Open" ardentia-dashboard-enter)
@@ -466,8 +685,7 @@ Also bound: S-<up> and S-<down> (priority up and down)."
     ("A" "Agent shell" ardentia-dashboard-agent-shell))
    ("Review"
     ("a" "Accept" ardentia-dashboard-accept)
-    ("s" "Send back" ardentia-dashboard-send-back)
-    ("l" "Toggle later" ardentia-dashboard-toggle-later))
+    ("s" "Send back" ardentia-dashboard-send-back))
    ("Run"
     ("x" "Run now" ardentia-dashboard-run)
     ("k" "Stop" ardentia-dashboard-stop))
@@ -476,31 +694,42 @@ Also bound: S-<up> and S-<down> (priority up and down)."
     ("+" "Up (S-<up>)" ardentia-dashboard-priority-up)
     ("-" "Down (S-<down>)" ardentia-dashboard-priority-down))
    ("View"
+    ("1" "Dashboard" ardentia-dashboard)
+    ("2" "Review (r)" ardentia-review-inbox)
+    ("3" "Completed (c)" ardentia-completed)
+    ("TAB" "Next view" ardentia-dashboard-next-view)
+    ("<backtab>" "Previous view" ardentia-dashboard-previous-view)
     ("g" "Refresh" ardentia-dashboard-refresh)
     ("d" "Toggle due date/time left" ardentia-dashboard-toggle-due)
-    ("c" "Completed" ardentia-completed)
     ("u" "Usage" ardentia-usage-refresh)
-    ("q" "Quit" quit-window)))
+    ("q" "Quit" quit-window))
+   ("Filter"
+    ("f" "Filter menu" ardentia-dashboard-filter-menu)
+    ("h" "Cycle host" ardentia-dashboard-cycle-host)
+    ("/" "Title regexp" ardentia-dashboard-filter-title)
+    ("l" "Toggle later (Dashboard)" ardentia-dashboard-toggle-later)
+    ("P" "Cycle period (Completed)" ardentia-dashboard-cycle-period)
+    ("w" "Cycle state (Completed)" ardentia-dashboard-cycle-state)))
   :alternates
   (("S-<up>" . ardentia-dashboard-priority-up)
-   ("S-<down>" . ardentia-dashboard-priority-down)))
+   ("S-<down>" . ardentia-dashboard-priority-down)
+   ("c" . ardentia-completed)
+   ("r" . ardentia-review-inbox)))
 
 (add-hook 'ardentia-usage-updated-hook #'ardentia-dashboard--render-all)
 
 (define-derived-mode ardentia-dashboard-mode tabulated-list-mode "Ardentia"
-  "Major mode listing the agent team's queues.
+  "Major mode listing the agent team's tasks in one of three views.
+The views are the dashboard (all open queues), the review queue and the
+completed tasks; see `ardentia-dashboard--view'.
 
 \\{ardentia-dashboard-mode-map}"
-  (setq tabulated-list-format
-        [("Queue" 8 nil) ("Status" 10 nil) ("Host" 10 nil) ("Att" 4 nil)
-         ("Age" 5 nil) ("Flags" 16 nil) ("Cost" 7 nil :right-align t)
-         ("File" 18 nil) ("Title" 0 nil)])
   (setq tabulated-list-padding 1)
   (setq tabulated-list-sort-key nil)
   (setq ardentia--current-task-function #'ardentia-dashboard--task-at-point)
   ;; The info line owns the header line; the column titles go into the buffer.
   (setq tabulated-list-use-header-line nil)
-  (tabulated-list-init-header)
+  (ardentia-dashboard--ensure-format (ardentia-dashboard--view-now))
   (setq header-line-format
         '(:eval (ardentia-dashboard--header-line)))
   (add-hook 'window-size-change-functions
@@ -576,19 +805,96 @@ MARKS is the result of `ardentia-dashboard--remember-positions'."
           (set-window-start win (point) t)))))
   (ardentia-dashboard--goto-mark (car marks)))
 
-(defun ardentia-dashboard--render ()
-  "Fill the current dashboard buffer from `ardentia--state'."
-  (setq tabulated-list-entries
-        (let ((ardentia--due-display-override (ardentia-dashboard--due-display)))
-          (ardentia-dashboard--entries (plist-get ardentia--state :tasks)
-                                       ardentia-dashboard--filter
-                                       (current-time)
-                                       (not (ardentia-dashboard--show-later-p))
-                                       (plist-get ardentia--state :merges))))
-  (let ((marks (ardentia-dashboard--remember-positions)))
-    (tabulated-list-print)
-    (ardentia-dashboard--update-layout)
-    (ardentia-dashboard--restore-positions marks)))
+(defun ardentia-dashboard--ensure-format (view)
+  "Install the column format that VIEW needs unless it is installed.
+Buffers made by older code have none of the new variables, so this runs
+in every render.  A new format resets the sort key."
+  (let ((kind (if (eq view 'completed) 'completed 'dashboard)))
+    (unless (eq ardentia-dashboard--format-kind kind)
+      (setq tabulated-list-format
+            (copy-tree (if (eq kind 'completed)
+                           ardentia-completed--format
+                         ardentia-dashboard--format)
+                       t)
+            tabulated-list-sort-key nil
+            ardentia-dashboard--format-kind kind)
+      (tabulated-list-init-header))))
+
+(defun ardentia-dashboard--default-host ()
+  "Return the default host of the hosts file, or nil."
+  (plist-get (ardentia-hosts) :default-host))
+
+(defun ardentia-dashboard--view-entries (view now)
+  "Return `tabulated-list-entries' for VIEW at NOW from the current filters.
+In the completed view also record the totals for the header line."
+  (let* ((host ardentia-dashboard--filter-host)
+         (title ardentia-dashboard--filter-title)
+         (default-host (and host (ardentia-dashboard--default-host))))
+    (if (eq view 'completed)
+        (let* ((tasks (ardentia-dashboard--filter-tasks
+                       ardentia-dashboard--completed-tasks
+                       host title default-host))
+               (period (ardentia-dashboard--period-now))
+               (state ardentia-dashboard--state-filter))
+          (setq ardentia-dashboard--completed-summary
+                (ardentia-completed--summary
+                 (ardentia-completed--select tasks period state now)))
+          (ardentia-completed--entries tasks period state now))
+      (let ((ardentia--due-display-override (ardentia-dashboard--due-display))
+            (dashboard (eq view 'dashboard)))
+        (ardentia-dashboard--entries
+         (ardentia-dashboard--filter-tasks
+          (plist-get ardentia--state :tasks) host title default-host)
+         (and (eq view 'review) 'review)
+         now
+         (and dashboard (not (ardentia-dashboard--show-later-p)))
+         (and dashboard
+              (ardentia-dashboard--filter-merges
+               (plist-get ardentia--state :merges)
+               host title (plist-get ardentia--state :host))))))))
+
+(defun ardentia-dashboard--goto-key (key)
+  "Move point to the row with the row KEY; return nil and stay when none."
+  (when key
+    (let ((start (point)))
+      (goto-char (point-min))
+      (or (catch 'found
+            (while (not (eobp))
+              (when (equal key (ardentia-dashboard--row-key
+                                (tabulated-list-get-id)))
+                (throw 'found t))
+              (forward-line 1)))
+          (progn (goto-char start) nil)))))
+
+(defun ardentia-dashboard--goto-first-row ()
+  "Move point to the first row, or to the start of an empty list."
+  (goto-char (point-min))
+  (while (and (not (eobp)) (null (tabulated-list-get-id)))
+    (forward-line 1))
+  (when (eobp) (goto-char (point-min))))
+
+(defun ardentia-dashboard--render (&optional switched)
+  "Fill the current task list buffer from its view and filters.
+Point and the windows keep their rows, see
+`ardentia-dashboard--remember-positions'.  With SWITCHED the view has just
+changed: point goes to the row remembered for the view instead, or to the
+top."
+  (let ((view (ardentia-dashboard--view-now)))
+    (ardentia-dashboard--ensure-format view)
+    (setq ardentia-dashboard--view view)
+    (setq tabulated-list-entries (ardentia-dashboard--view-entries
+                                  view (current-time)))
+    (let ((marks (unless switched (ardentia-dashboard--remember-positions))))
+      (tabulated-list-print)
+      (ardentia-dashboard--update-layout)
+      (if (not switched)
+          (ardentia-dashboard--restore-positions marks)
+        (unless (ardentia-dashboard--goto-key
+                 (alist-get view ardentia-dashboard--view-points))
+          (ardentia-dashboard--goto-first-row))
+        (dolist (win (get-buffer-window-list (current-buffer) nil t))
+          (set-window-point win (point))
+          (set-window-start win (point-min) t))))))
 
 (defun ardentia-dashboard--live-buffers ()
   "Return the live dashboard buffers."
@@ -601,12 +907,36 @@ MARKS is the result of `ardentia-dashboard--remember-positions'."
   (dolist (buf (ardentia-dashboard--live-buffers))
     (with-current-buffer buf (ardentia-dashboard--render))))
 
+(defun ardentia-dashboard--completed-refresh ()
+  "Fetch the completed tasks for the current buffer asynchronously.
+Does nothing while a fetch is running.  A failed fetch keeps the old list
+and shows its error in the header line."
+  (unless ardentia-dashboard--completed-refreshing
+    (let ((buf (current-buffer)))
+      (setq ardentia-dashboard--completed-refreshing t)
+      (ardentia-completed--fetch
+       (lambda (tasks err)
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (setq ardentia-dashboard--completed-refreshing nil
+                   ardentia-dashboard--completed-time (current-time)
+                   ardentia-dashboard--completed-error err)
+             (unless err (setq ardentia-dashboard--completed-tasks tasks))
+             (when (derived-mode-p 'ardentia-dashboard-mode)
+               (ardentia-dashboard--render)))))))
+    (force-mode-line-update)))
+
 (defun ardentia-dashboard-refresh-all ()
   "Refresh all dashboard buffers asynchronously."
   (ardentia-refresh #'ardentia-dashboard--render-all)
   ;; Not part of the join in `ardentia-refresh': a slow network must not
   ;; delay the task list.  Throttled; re-renders through the hook.
   (ardentia-usage-maybe-refresh)
+  ;; The completed view has its own data: fetch it again.
+  (dolist (buf (ardentia-dashboard--live-buffers))
+    (with-current-buffer buf
+      (when (eq (ardentia-dashboard--view-now) 'completed)
+        (ardentia-dashboard--completed-refresh))))
   (ardentia-dashboard--render-all))
 
 (defun ardentia-dashboard--visible-p ()
@@ -643,31 +973,68 @@ MARKS is the result of `ardentia-dashboard--remember-positions'."
   (interactive)
   (ardentia-dashboard-refresh-all))
 
-(defun ardentia-dashboard--open (name filter)
-  "Show the dashboard buffer NAME restricted to queue FILTER and refresh it."
-  (let ((buf (get-buffer-create name)))
+(defun ardentia-dashboard--switch-view (view)
+  "Show VIEW in the current task list buffer.
+Remember the row at point for the view left and restore the one
+remembered for VIEW.  Sort keys start over.  The completed view fetches its
+data."
+  (let ((old (ardentia-dashboard--view-now)))
+    (unless (eq old view)
+      (setf (alist-get old ardentia-dashboard--view-points)
+            (ardentia-dashboard--row-key (tabulated-list-get-id))))
+    (setq ardentia-dashboard--view view
+          tabulated-list-sort-key nil)
+    (ardentia-dashboard--ensure-format view)
+    (tabulated-list-init-header)
+    (ardentia-dashboard--render (not (eq old view)))
+    (when (eq view 'completed)
+      (ardentia-dashboard--completed-refresh))))
+
+(defun ardentia-dashboard--open (view &optional name)
+  "Show the task list buffer NAME (default `*ardentia*') in VIEW.
+Create it when needed.  The shared data is refreshed unless the command
+was given from inside that buffer, where it is current already."
+  (let* ((buf (get-buffer-create (or name "*ardentia*")))
+         (inside (eq buf (current-buffer))))
     (with-current-buffer buf
       (unless (derived-mode-p 'ardentia-dashboard-mode)
         (ardentia-dashboard-mode))
-      (setq ardentia-dashboard--filter filter)
-      (ardentia-dashboard--render))
+      (ardentia-dashboard--switch-view view))
     ;; The mode only starts the timer for a new buffer; a buried one, or a
     ;; buffer that predates loading this code, gets it here.
     (ardentia-dashboard--refresh-timer-start)
     (pop-to-buffer-same-window buf)
-    (ardentia-dashboard-refresh-all)))
+    (unless inside
+      (ardentia-dashboard-refresh-all))))
 
 ;;;###autoload
 (defun ardentia-dashboard ()
-  "Show the dashboard of all agent queues."
+  "Show the task list in its dashboard view: all open agent queues."
   (interactive)
-  (ardentia-dashboard--open "*ardentia*" nil))
+  (ardentia-dashboard--open 'dashboard))
 
 ;;;###autoload
 (defun ardentia-review-inbox ()
-  "Show the dashboard restricted to tasks waiting for review."
+  "Show the task list in its review view: the tasks waiting for review."
   (interactive)
-  (ardentia-dashboard--open "*ardentia-review*" 'review))
+  (ardentia-dashboard--open 'review))
+
+(defun ardentia-dashboard--cycle-view (step)
+  "Switch to the view STEP places after the current one, cyclically."
+  (let* ((views ardentia-dashboard--views)
+         (pos (or (seq-position views (ardentia-dashboard--view-now)) 0)))
+    (ardentia-dashboard--switch-view
+     (nth (mod (+ pos step) (length views)) views))))
+
+(defun ardentia-dashboard-next-view ()
+  "Switch to the next view: dashboard, review, completed, and around."
+  (interactive)
+  (ardentia-dashboard--cycle-view 1))
+
+(defun ardentia-dashboard-previous-view ()
+  "Switch to the previous view: completed, review, dashboard, and around."
+  (interactive)
+  (ardentia-dashboard--cycle-view -1))
 
 (defun ardentia-dashboard--require-task (&optional review)
   "Return the task at point; with REVIEW require the review queue.
@@ -766,14 +1133,163 @@ in agent-shell."
         (ardentia-session-attach task)
       (ardentia-session-open-agent-shell task))))
 
+(defun ardentia-dashboard--require-view (view what)
+  "Signal a `user-error' unless the buffer shows VIEW; WHAT names the filter."
+  (unless (eq (ardentia-dashboard--view-now) view)
+    (user-error "%s only works in the %s view (%s)"
+                what (alist-get view ardentia-dashboard--view-labels)
+                (pcase view ('dashboard "1") ('review "2") (_ "3")))))
+
 (defun ardentia-dashboard-toggle-later ()
-  "Hide or show ready tasks that are not yet due in this dashboard buffer."
+  "Hide or show ready tasks that are not yet due in this task list.
+A filter of the dashboard view."
   (interactive)
+  (ardentia-dashboard--require-view 'dashboard "Later tasks")
   (setq ardentia-dashboard--show-later
         (not (ardentia-dashboard--show-later-p)))
   (ardentia-dashboard--render)
   (message "Later tasks: %s"
            (if (ardentia-dashboard--show-later-p) "shown" "hidden")))
+
+(defun ardentia-dashboard-cycle-host ()
+  "Cycle the host filter: all, the local host, each other host, all.
+The hosts come from the hosts file.  A task counts for the host that
+claimed it, else for its NAME_only tag, else for the default host."
+  (interactive)
+  (setq ardentia-dashboard--filter-host
+        (ardentia-dashboard--next-host
+         ardentia-dashboard--filter-host
+         (plist-get ardentia--state :host)
+         (plist-get (ardentia-hosts) :hosts)))
+  (ardentia-dashboard--render)
+  (message "Host filter: %s" (or ardentia-dashboard--filter-host "all")))
+
+(defun ardentia-dashboard-filter-title (regexp)
+  "Show only the tasks whose title matches REGEXP, ignoring case.
+An empty REGEXP clears the filter."
+  (interactive
+   (list (read-string "Title regexp (empty clears): "
+                      ardentia-dashboard--filter-title)))
+  (when (and (not (string-empty-p regexp))
+             (condition-case nil (progn (string-match-p regexp "") nil)
+               (invalid-regexp t)))
+    (user-error "Invalid regexp: %s" regexp))
+  (setq ardentia-dashboard--filter-title
+        (if (string-empty-p regexp) nil regexp))
+  (ardentia-dashboard--render)
+  (message "Title filter: %s"
+           (if ardentia-dashboard--filter-title
+               (format "/%s/" ardentia-dashboard--filter-title) "none")))
+
+(defun ardentia-dashboard-cycle-period ()
+  "Cycle the period filter: all, last 30 days, last 7 days, today.
+A filter of the completed view."
+  (interactive)
+  (ardentia-dashboard--require-view 'completed "The period filter")
+  (setq ardentia-dashboard--period
+        (ardentia-completed--next-period (ardentia-dashboard--period-now)))
+  (ardentia-dashboard--render)
+  (message "Period: %s"
+           (ardentia-completed--period-label (ardentia-dashboard--period-now))))
+
+(defun ardentia-dashboard-cycle-state ()
+  "Cycle the state filter: all, waiting for review, accepted.
+A filter of the completed view."
+  (interactive)
+  (ardentia-dashboard--require-view 'completed "The state filter")
+  (setq ardentia-dashboard--state-filter
+        (ardentia-completed--next-state ardentia-dashboard--state-filter))
+  (ardentia-dashboard--render)
+  (message "State: %s"
+           (ardentia-completed--state-label ardentia-dashboard--state-filter)))
+
+(defun ardentia-dashboard-clear-filters ()
+  "Reset every filter of this task list to its default."
+  (interactive)
+  (setq ardentia-dashboard--filter-host nil
+        ardentia-dashboard--filter-title nil
+        ardentia-dashboard--show-later 'default
+        ardentia-dashboard--period 'default
+        ardentia-dashboard--state-filter 'all)
+  (ardentia-dashboard--render)
+  (message "Filters cleared"))
+
+(defun ardentia-dashboard--menu-buffer ()
+  "Return the task list buffer a filter menu entry refers to, or nil.
+Transient evaluates descriptions and predicates in varying buffers."
+  (seq-find (lambda (buf)
+              (and (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (derived-mode-p 'ardentia-dashboard-mode))))
+            (list (current-buffer)
+                  (bound-and-true-p transient--original-buffer)
+                  (bound-and-true-p transient--shadowed-buffer))))
+
+(defmacro ardentia-dashboard--in-menu-buffer (&rest body)
+  "Run BODY in the task list buffer the filter menu belongs to."
+  (declare (indent 0))
+  `(if-let* ((buf (ardentia-dashboard--menu-buffer)))
+       (with-current-buffer buf ,@body)
+     nil))
+
+(defun ardentia-dashboard--menu-text (label value-fn)
+  "Return \"LABEL: VALUE\" for the filter menu, VALUE from VALUE-FN.
+VALUE-FN runs in the task list buffer the menu belongs to."
+  (format "%s: %s" label
+          (or (ardentia-dashboard--in-menu-buffer (funcall value-fn)) "?")))
+
+(defun ardentia-dashboard--menu-inapt-p (view)
+  "Return non-nil unless the buffer of the filter menu shows VIEW."
+  (not (ardentia-dashboard--in-menu-buffer
+         (eq (ardentia-dashboard--view-now) view))))
+
+(transient-define-prefix ardentia-dashboard-filter-menu ()
+  "Filters of the ardentia task list, each with its current value.
+The keys stay open; entries that do not apply in the current view are
+greyed out."
+  [["Everywhere"
+    ("h" ardentia-dashboard-cycle-host
+     :description (lambda ()
+                    (ardentia-dashboard--menu-text
+                     "Host" (lambda () (or ardentia-dashboard--filter-host
+                                           "all"))))
+     :transient t)
+    ("/" ardentia-dashboard-filter-title
+     :description (lambda ()
+                    (ardentia-dashboard--menu-text
+                     "Title" (lambda ()
+                               (if ardentia-dashboard--filter-title
+                                   (format "/%s/" ardentia-dashboard--filter-title)
+                                 "none"))))
+     :transient t)]
+   ["Dashboard view"
+    ("l" ardentia-dashboard-toggle-later
+     :description (lambda ()
+                    (ardentia-dashboard--menu-text
+                     "Later tasks" (lambda ()
+                                     (if (ardentia-dashboard--show-later-p)
+                                         "shown" "hidden"))))
+     :inapt-if (lambda () (ardentia-dashboard--menu-inapt-p 'dashboard))
+     :transient t)]
+   ["Completed view"
+    ("P" ardentia-dashboard-cycle-period
+     :description (lambda ()
+                    (ardentia-dashboard--menu-text
+                     "Period" (lambda ()
+                                (ardentia-completed--period-label
+                                 (ardentia-dashboard--period-now)))))
+     :inapt-if (lambda () (ardentia-dashboard--menu-inapt-p 'completed))
+     :transient t)
+    ("w" ardentia-dashboard-cycle-state
+     :description (lambda ()
+                    (ardentia-dashboard--menu-text
+                     "State" (lambda ()
+                               (ardentia-completed--state-label
+                                ardentia-dashboard--state-filter))))
+     :inapt-if (lambda () (ardentia-dashboard--menu-inapt-p 'completed))
+     :transient t)]
+   ["Reset"
+    ("c" "Clear all filters" ardentia-dashboard-clear-filters :transient t)]])
 
 (defun ardentia-dashboard-toggle-due ()
   "Switch the due flag of later tasks in this buffer between time left and date."
@@ -795,15 +1311,23 @@ On a running merge open its directory with dired."
       (ardentia-dashboard--open-merge)
     (ardentia-visit-task (ardentia-dashboard--require-task))))
 
+(defun ardentia-dashboard--require-open-review-task ()
+  "Return the task at point; require it to wait for review, not accepted.
+An accepted (done) task of the completed view is refused."
+  (let ((task (ardentia-dashboard--require-task t)))
+    (when (plist-get task :done)
+      (user-error "Task is already accepted"))
+    task))
+
 (defun ardentia-dashboard-accept ()
   "Accept the review task at point."
   (interactive)
-  (ardentia-accept (ardentia-dashboard--require-task t)))
+  (ardentia-accept (ardentia-dashboard--require-open-review-task)))
 
 (defun ardentia-dashboard-send-back ()
   "Send the review task at point back to the agents."
   (interactive)
-  (ardentia-send-back (ardentia-dashboard--require-task t)))
+  (ardentia-send-back (ardentia-dashboard--require-open-review-task)))
 
 (defun ardentia-dashboard-run ()
   "Run the ready (or later) task at point now."
