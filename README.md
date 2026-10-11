@@ -138,6 +138,7 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-session-stop` | Session transcript: stop the task of this transcript |
 | `ardentia-dashboard-priority` | Dashboard: set the priority of the ready or later task at point (SPC removes it) |
 | `ardentia-dashboard-priority-up` / `-down` | Dashboard: raise or lower that priority |
+| `ardentia-dashboard-menu`, `ardentia-review-menu`, `ardentia-completed-menu`, `ardentia-knowledge-menu`, `ardentia-agents-menu`, `ardentia-session-menu` | `?` in the respective buffer: transient menu listing every key of that buffer, grouped, under the same key; `.` opens `ardentia` |
 
 ### Keys in the dashboard
 
@@ -153,7 +154,8 @@ raise/lower it (ready and later tasks only),
 found by its line or, failing that, by its unique title; `x` creates the
 ID and saves the file first),
 `a` accept, `s` send back, `l` hide or show later tasks, `x` run the ready
-or later task now, `k` stop the running task at point, `c` completed tasks overview, `u` fetch the usage now, `q` quit, `?` menu.
+or later task now, `k` stop the running task at point, `c` completed tasks overview, `u` fetch the usage now, `q` quit, `?` menu of all keys of this buffer
+(`ardentia-dashboard-menu`, grouped, same keys; `.` opens the global menu).
 A refresh keeps point and scroll position on the same task.
 The Cost column shows `AI_COST_USD_TOTAL` for every task that has it.
 
@@ -258,7 +260,8 @@ sums), the period, the time of the last refresh and an error if any.
 transcript, `o` visit the heading, `p` cycle the period (all, last 30
 days, last 7 days, today; by `AI_SESSION`, so tasks without it only show
 under all), `r` toggle between all tasks and only those still waiting for
-review, `q` quit, `?` menu.
+review, `q` quit, `?` menu of all keys of this buffer
+(`ardentia-completed-menu`; `.` opens the global menu).
 
 ### Knowledge and agent browsers
 
@@ -273,20 +276,23 @@ only" and are never visited whole by `RET`. Keys: `RET` view a small file
 read-only, or ask for a regexp and grep that one large file in a
 `grep-mode` buffer; `s` grep a regexp over all files; `o` visit the file
 (a large one only after a yes-or-no question); `g` refresh; `q` quit; `?`
-menu.
+menu of all keys of this buffer (`ardentia-knowledge-menu`; `.` opens the
+global menu).
 
 `ardentia-agents` (`a` in the menu) lists the `*.md` files of
 `ardentia-agents-directory` with the simple `key: value` lines of their
 YAML frontmatter: Name, Model, Tools, Permission (`permissionMode`), Turns
 (`maxTurns`), OmitMd (`omitClaudeMd`) and Description. Missing keys show
 "-"; a file without frontmatter shows its file name. Keys: `RET` view the
-file read-only, `g` refresh, `q` quit, `?` menu.
+file read-only, `g` refresh, `q` quit, `?` menu of all keys of this buffer
+(`ardentia-agents-menu`; `.` opens the global menu).
 
 ### Keys in the review buffer
 
 `a` accept, `s` send back (asks for a note), `y` let the agents do an open
 child TODO themselves, `o` visit the heading, `t` session transcript,
-`g` re-render, `q` quit.
+`g` re-render, `q` quit, `?` menu of all keys of this buffer
+(`ardentia-review-menu`; `.` opens the global menu).
 The headline carries the TODO keyword and priority, and the
 `- Status ::` line shows the keyword and the agents' `AI_STATUS`.
 When the usage properties exist, the section "Agent properties" starts
@@ -330,7 +336,8 @@ Keys: `g` re-read from scratch, `f` toggle following, `o` visit the
 heading, `i` send a message into the running session, `k` stop the running
 task, `a` open in
 `agent-shell`, `C-c C-n`/`C-c C-p` (also `n`/`p`) next/previous entry,
-`q` quit.
+`q` quit, `?` menu of all keys of this buffer (`ardentia-session-menu`; `.`
+opens the global menu).
 
 Live input: the runner can keep an input pipe open per orchestrator, fed by
 `ardentia-session-say-command` (default `ai/tools/aiready-say`;

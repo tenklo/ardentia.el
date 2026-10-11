@@ -210,14 +210,19 @@ FILES are absolute names; grep runs in `ardentia-knowledge-directory'."
   (setq tabulated-list-entries (ardentia-knowledge--entries))
   (tabulated-list-print t))
 
-(defvar-keymap ardentia-knowledge-mode-map
-  :doc "Keymap for `ardentia-knowledge-mode'."
-  "g" #'ardentia-knowledge-refresh
-  "RET" #'ardentia-knowledge-open
-  "s" #'ardentia-knowledge-search
-  "o" #'ardentia-knowledge-visit
-  "q" #'quit-window
-  "?" #'ardentia)
+(ardentia-define-keys-and-menu
+    ardentia-knowledge-mode-map ardentia-knowledge-menu
+  :keymap-doc "Keymap for `ardentia-knowledge-mode'."
+  :menu-doc "Keys of the ardentia knowledge browser."
+  :groups
+  (("File at point"
+    ("RET" "Open" ardentia-knowledge-open)
+    ("o" "Visit" ardentia-knowledge-visit))
+   ("Search"
+    ("s" "Grep all files" ardentia-knowledge-search))
+   ("View"
+    ("g" "Refresh" ardentia-knowledge-refresh)
+    ("q" "Quit" quit-window))))
 
 (define-derived-mode ardentia-knowledge-mode tabulated-list-mode
   "Ardentia-Knowledge"
@@ -288,12 +293,16 @@ A file without frontmatter shows its file name and \"-\" elsewhere."
   (setq tabulated-list-entries (ardentia-agents--entries))
   (tabulated-list-print t))
 
-(defvar-keymap ardentia-agents-mode-map
-  :doc "Keymap for `ardentia-agents-mode'."
-  "g" #'ardentia-agents-refresh
-  "RET" #'ardentia-agents-open
-  "q" #'quit-window
-  "?" #'ardentia)
+(ardentia-define-keys-and-menu
+    ardentia-agents-mode-map ardentia-agents-menu
+  :keymap-doc "Keymap for `ardentia-agents-mode'."
+  :menu-doc "Keys of the ardentia agents browser."
+  :groups
+  (("Agent at point"
+    ("RET" "Open" ardentia-agents-open))
+   ("View"
+    ("g" "Refresh" ardentia-agents-refresh)
+    ("q" "Quit" quit-window))))
 
 (define-derived-mode ardentia-agents-mode tabulated-list-mode
   "Ardentia-Agents"

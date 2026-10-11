@@ -35,8 +35,47 @@
 ;;; Code:
 
 (require 'json)
+(require 'transient)
 (require 'seq)
 (require 'subr-x)
+
+;;;; Per-buffer help menus
+
+(declare-function ardentia "ardentia" ())
+
+(defmacro ardentia-define-keys-and-menu (map prefix &rest args)
+  "Define keymap MAP and its help menu PREFIX from one table.
+ARGS is a plist.  `:keymap-doc' and `:menu-doc' are the docstrings of the
+keymap and of the transient PREFIX.  `:groups' is a list of columns,
+each (TITLE (KEY DESCRIPTION COMMAND)...); every entry is bound to KEY
+in MAP and shown under KEY in the menu.  `:alternates' is a list of
+(KEY . COMMAND) bound in MAP only.  `?' is bound to PREFIX, which also
+offers the global `ardentia' dispatch menu on `.'.  The groups are
+stored on the `ardentia-menu' property of PREFIX."
+  (declare (indent 2))
+  (let* ((groups (plist-get args :groups))
+         (alternates (plist-get args :alternates))
+         (bindings
+          (append
+           (mapcan (lambda (g)
+                     (mapcan (lambda (e) (list (nth 0 e) (list 'function (nth 2 e))))
+                             (cdr g)))
+                   groups)
+           (mapcan (lambda (a) (list (car a) (list 'function (cdr a))))
+                   alternates)
+           (list "?" (list 'function prefix))))
+         (columns
+          (append
+           (mapcar (lambda (g) (apply #'vector (car g) (cdr g))) groups)
+           (list (vector "Ardentia" '("." "Global menu" ardentia))))))
+    `(progn
+       (defvar-keymap ,map
+         :doc ,(plist-get args :keymap-doc)
+         ,@bindings)
+       (put ',prefix 'ardentia-menu '(:groups ,groups :alternates ,alternates))
+       (transient-define-prefix ,prefix ()
+         ,(plist-get args :menu-doc)
+         ,(apply #'vector columns)))))
 
 (defgroup ardentia nil
   "View and command layer for an Org agent team."

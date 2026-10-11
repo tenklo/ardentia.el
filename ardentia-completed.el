@@ -249,16 +249,21 @@ GETTER maps a task to a number or nil; nil counts as smaller than any."
   "Return the number of runs of TASK (AI_USAGE_RUNS), or nil."
   (ardentia--parse-number (ardentia--task-prop task "AI_USAGE_RUNS")))
 
-(defvar-keymap ardentia-completed-mode-map
-  :doc "Keymap for `ardentia-completed-mode'."
-  "g" #'ardentia-completed-refresh
-  "RET" #'ardentia-completed-review
-  "t" #'ardentia-completed-transcript
-  "o" #'ardentia-completed-visit
-  "p" #'ardentia-completed-cycle-period
-  "r" #'ardentia-completed-toggle-open
-  "q" #'quit-window
-  "?" #'ardentia)
+(ardentia-define-keys-and-menu
+    ardentia-completed-mode-map ardentia-completed-menu
+  :keymap-doc "Keymap for `ardentia-completed-mode'."
+  :menu-doc "Keys of the ardentia completed-tasks list."
+  :groups
+  (("Task at point"
+    ("RET" "Review" ardentia-completed-review)
+    ("t" "Transcript" ardentia-completed-transcript)
+    ("o" "Visit heading" ardentia-completed-visit))
+   ("Filter"
+    ("p" "Cycle period" ardentia-completed-cycle-period)
+    ("r" "Toggle only open" ardentia-completed-toggle-open))
+   ("View"
+    ("g" "Refresh" ardentia-completed-refresh)
+    ("q" "Quit" quit-window))))
 
 (define-derived-mode ardentia-completed-mode tabulated-list-mode
   "Ardentia-Completed"

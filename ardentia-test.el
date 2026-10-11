@@ -1989,7 +1989,8 @@ or, with NO-MULTI-TAG, fails on it like an org-tool that predates the form."
   (dolist (pair '(("g" . ardentia-completed-refresh) ("RET" . ardentia-completed-review)
                   ("t" . ardentia-completed-transcript) ("o" . ardentia-completed-visit)
                   ("p" . ardentia-completed-cycle-period)
-                  ("r" . ardentia-completed-toggle-open) ("?" . ardentia)))
+                  ("r" . ardentia-completed-toggle-open)
+                  ("?" . ardentia-completed-menu)))
     (should (eq (keymap-lookup ardentia-completed-mode-map (car pair)) (cdr pair))))
   (should (eq (keymap-lookup ardentia-dashboard-mode-map "c") 'ardentia-completed))
   (with-temp-buffer
@@ -3411,3 +3412,82 @@ otherwise.  It logs the arguments, and the stdin text of a send."
     (should-error (ardentia-agents) :type 'user-error)))
 
 ;;; ardentia-test.el ends here
+
+;;; Per-buffer help menus
+
+(defun ardentia-test--suffix-command (prefix key)
+  "Return the command of the suffix on KEY in transient PREFIX, or nil.
+Uses `transient-get-suffix' and copes with both suffix shapes (object, or
+\(LEVEL CLASS PLIST) list)."
+  (let ((suffix (ignore-errors (transient-get-suffix prefix key))))
+    (cond ((null suffix) nil)
+          ((consp suffix)
+           ;; (CLASS . PLIST) or (LEVEL CLASS PLIST)
+           (plist-get (if (consp (car (last suffix))) (car (last suffix)) (cdr suffix))
+                      :command))
+          (t (eieio-oref suffix 'command)))))
+
+(defconst ardentia-test--menus
+  '((ardentia-dashboard-mode-map ardentia-dashboard-menu 15)
+    (ardentia-review-mode-map ardentia-review-menu 7)
+    (ardentia-completed-mode-map ardentia-completed-menu 7)
+    (ardentia-knowledge-mode-map ardentia-knowledge-menu 5)
+    (ardentia-agents-mode-map ardentia-agents-menu 3)
+    (ardentia-session-mode-map ardentia-session-menu 9))
+  "Each element: (MAP PREFIX MINIMUM-ENTRY-COUNT).")
+
+(defun ardentia-test--map-bindings (map &optional prefix)
+  "Return an alist (KEY-DESCRIPTION . COMMAND) of all bindings in MAP.
+Nested prefix keymaps are flattened; PREFIX is the key vector so far.
+Bindings inherited from a parent keymap are not included."
+  (let ((map (let ((copy (copy-keymap map))) (set-keymap-parent copy nil) copy))
+        acc)
+    (map-keymap (lambda (ev def)
+                  (let ((keys (vconcat prefix (vector ev))))
+                    (if (keymapp def)
+                        (setq acc (append (ardentia-test--map-bindings def keys) acc))
+                      (push (cons (key-description keys) def) acc))))
+                map)
+    acc))
+
+(ert-deftest ardentia-test-help-menus-match-keymaps ()
+  (dolist (spec ardentia-test--menus)
+    (pcase-let* ((`(,map-sym ,prefix ,minimum) spec)
+                 (map (symbol-value map-sym))
+                 (data (get prefix 'ardentia-menu))
+                 (entries (mapcan (lambda (g) (copy-sequence (cdr g)))
+                                  (plist-get data :groups)))
+                 (alternates (plist-get data :alternates)))
+      (should (commandp prefix))
+      (should (>= (length entries) minimum))
+      (should (eq (keymap-lookup map "?") prefix))
+      ;; menu -> keymap, via the public transient API
+      (dolist (e entries)
+        (should (eq (ardentia-test--suffix-command prefix (nth 0 e)) (nth 2 e)))
+        (should (eq (keymap-lookup map (nth 0 e)) (nth 2 e))))
+      ;; global dispatch entry, on a key bound in no mode map
+      (should (eq (ardentia-test--suffix-command prefix ".") 'ardentia))
+      (should-not (keymap-lookup map "."))
+      ;; keymap -> menu: every binding is in the menu, an alternate or "?"
+      (let ((bindings (ardentia-test--map-bindings map)))
+        (should (>= (length bindings) (1+ minimum)))
+        (dolist (b bindings)
+          (unless (equal (car b) "?")
+            (should (or (equal (ardentia-test--suffix-command prefix (car b))
+                               (cdr b))
+                        (equal (cdr (assoc (car b) alternates)) (cdr b))))))))))
+
+(ert-deftest ardentia-test-help-menus-alternates-agree ()
+  "Alternate keys are bound to a command the menu offers."
+  (let ((n 0))
+    (dolist (spec ardentia-test--menus)
+      (pcase-let* ((`(,map-sym ,prefix ,_) spec)
+                   (data (get prefix 'ardentia-menu))
+                   (cmds (mapcar #'caddr
+                                 (mapcan (lambda (g) (copy-sequence (cdr g)))
+                                         (plist-get data :groups)))))
+        (dolist (a (plist-get data :alternates))
+          (setq n (1+ n))
+          (should (memq (cdr a) cmds))
+          (should (eq (keymap-lookup (symbol-value map-sym) (car a)) (cdr a))))))
+    (should (= n 4))))

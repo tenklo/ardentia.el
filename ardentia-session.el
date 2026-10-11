@@ -425,20 +425,27 @@ Signal a `user-error' and leave point alone if there is no such entry."
             (goto-char origin)
             (user-error "No previous entry")))))))
 
-(defvar-keymap ardentia-session-mode-map
-  :doc "Keymap for `ardentia-session-mode'."
-  "g" #'ardentia-session-reread
-  "f" #'ardentia-session-toggle-follow
-  "o" #'ardentia-session-visit
-  "i" #'ardentia-session-compose
-  "a" #'ardentia-session-agent-shell-here
-  "k" #'ardentia-session-stop
-  "n" #'ardentia-session-next-entry
-  "p" #'ardentia-session-previous-entry
-  "C-c C-n" #'ardentia-session-next-entry
-  "C-c C-p" #'ardentia-session-previous-entry
-  "q" #'quit-window
-  "?" #'ardentia)
+(ardentia-define-keys-and-menu
+    ardentia-session-mode-map ardentia-session-menu
+  :keymap-doc "Keymap for `ardentia-session-mode'."
+  :menu-doc "Keys of the ardentia session transcript.
+Also bound: C-c C-n and C-c C-p (next and previous entry)."
+  :groups
+  (("Task"
+    ("o" "Visit heading" ardentia-session-visit)
+    ("i" "Compose message" ardentia-session-compose)
+    ("a" "Agent shell here" ardentia-session-agent-shell-here)
+    ("k" "Stop" ardentia-session-stop))
+   ("Navigate"
+    ("n" "Next entry (C-c C-n)" ardentia-session-next-entry)
+    ("p" "Previous entry (C-c C-p)" ardentia-session-previous-entry))
+   ("View"
+    ("g" "Re-read" ardentia-session-reread)
+    ("f" "Toggle follow" ardentia-session-toggle-follow)
+    ("q" "Quit" quit-window)))
+  :alternates
+  (("C-c C-n" . ardentia-session-next-entry)
+   ("C-c C-p" . ardentia-session-previous-entry)))
 
 (defun ardentia-session-stop ()
   "Stop the run of the task shown in this transcript."

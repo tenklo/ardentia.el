@@ -249,16 +249,21 @@ Toggle in a buffer with \\[toggle-truncate-lines]."
 (defvar-local ardentia-review--info nil
   "Review data last rendered in this buffer.")
 
-(defvar-keymap ardentia-review-mode-map
-  :doc "Keymap for `ardentia-review-mode'."
-  "a" #'ardentia-review-accept
-  "s" #'ardentia-review-send-back
-  "y" #'ardentia-review-yourself
-  "o" #'ardentia-review-visit
-  "t" #'ardentia-review-transcript
-  "g" #'ardentia-review-render
-  "q" #'quit-window
-  "?" #'ardentia)
+(ardentia-define-keys-and-menu
+    ardentia-review-mode-map ardentia-review-menu
+  :keymap-doc "Keymap for `ardentia-review-mode'."
+  :menu-doc "Keys of the ardentia review buffer."
+  :groups
+  (("Review"
+    ("a" "Accept" ardentia-review-accept)
+    ("s" "Send back" ardentia-review-send-back)
+    ("y" "Let agents do child TODO" ardentia-review-yourself))
+   ("Task"
+    ("o" "Visit heading" ardentia-review-visit)
+    ("t" "Transcript" ardentia-review-transcript))
+   ("View"
+    ("g" "Re-render" ardentia-review-render)
+    ("q" "Quit" quit-window))))
 
 (define-derived-mode ardentia-review-mode org-mode "Ardentia-Review"
   "Read-only org view of one task waiting for review.

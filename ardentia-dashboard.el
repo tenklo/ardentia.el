@@ -263,27 +263,36 @@ tasks never.  MERGES, the running merge rows, are added when FILTER is nil."
             (and (null filter) merges))
            now)))
 
-(defvar-keymap ardentia-dashboard-mode-map
-  :doc "Keymap for `ardentia-dashboard-mode'."
-  "g" #'ardentia-dashboard-refresh
-  "RET" #'ardentia-dashboard-enter
-  "t" #'ardentia-dashboard-transcript
-  "A" #'ardentia-dashboard-agent-shell
-  "o" #'ardentia-dashboard-visit
-  "a" #'ardentia-dashboard-accept
-  "s" #'ardentia-dashboard-send-back
-  "l" #'ardentia-dashboard-toggle-later
-  "x" #'ardentia-dashboard-run
-  "k" #'ardentia-dashboard-stop
-  "," #'ardentia-dashboard-priority
-  "+" #'ardentia-dashboard-priority-up
-  "S-<up>" #'ardentia-dashboard-priority-up
-  "-" #'ardentia-dashboard-priority-down
-  "S-<down>" #'ardentia-dashboard-priority-down
-  "q" #'quit-window
-  "c" #'ardentia-completed
-  "u" #'ardentia-usage-refresh
-  "?" #'ardentia)
+(ardentia-define-keys-and-menu
+    ardentia-dashboard-mode-map ardentia-dashboard-menu
+  :keymap-doc "Keymap for `ardentia-dashboard-mode'."
+  :menu-doc "Keys of the ardentia dashboard.
+Also bound: S-<up> and S-<down> (priority up and down)."
+  :groups
+  (("Task at point"
+    ("RET" "Open" ardentia-dashboard-enter)
+    ("o" "Visit heading" ardentia-dashboard-visit)
+    ("t" "Transcript" ardentia-dashboard-transcript)
+    ("A" "Agent shell" ardentia-dashboard-agent-shell))
+   ("Review"
+    ("a" "Accept" ardentia-dashboard-accept)
+    ("s" "Send back" ardentia-dashboard-send-back)
+    ("l" "Toggle later" ardentia-dashboard-toggle-later))
+   ("Run"
+    ("x" "Run now" ardentia-dashboard-run)
+    ("k" "Stop" ardentia-dashboard-stop))
+   ("Priority"
+    ("," "Set" ardentia-dashboard-priority)
+    ("+" "Up (S-<up>)" ardentia-dashboard-priority-up)
+    ("-" "Down (S-<down>)" ardentia-dashboard-priority-down))
+   ("View"
+    ("g" "Refresh" ardentia-dashboard-refresh)
+    ("c" "Completed" ardentia-completed)
+    ("u" "Usage" ardentia-usage-refresh)
+    ("q" "Quit" quit-window)))
+  :alternates
+  (("S-<up>" . ardentia-dashboard-priority-up)
+   ("S-<down>" . ardentia-dashboard-priority-down)))
 
 (add-hook 'ardentia-usage-updated-hook #'ardentia-dashboard--render-all)
 
