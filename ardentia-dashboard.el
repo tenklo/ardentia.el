@@ -91,12 +91,12 @@ Nil shows plain text.  Takes effect on the next refresh."
   :group 'ardentia-faces)
 
 (defface ardentia-queue-review
-  '((t :inherit font-lock-keyword-face))
+  '((t :inherit font-lock-keyword-face :weight normal))
   "Queue column of a task waiting for review."
   :group 'ardentia-faces)
 
 (defface ardentia-queue-running
-  '((t :inherit font-lock-string-face))
+  '((t :inherit font-lock-string-face :weight normal))
   "Queue column of a running task."
   :group 'ardentia-faces)
 
@@ -131,7 +131,7 @@ Nil shows plain text.  Takes effect on the next refresh."
   :group 'ardentia-faces)
 
 (defface ardentia-priority
-  '((t :inherit font-lock-constant-face))
+  '((t :inherit font-lock-constant-face :weight normal))
   "Priority token of the other priorities at the start of a title."
   :group 'ardentia-faces)
 

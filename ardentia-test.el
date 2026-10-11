@@ -3714,12 +3714,13 @@ Text
       (should (ardentia-test--has-face (aref row 0) 'ardentia-queue-running)))
     (let ((row (ardentia-test--colored
                 (ardentia-test--task
-                 :queue 'ready
-                 :props '(("SCHEDULED" . "<2026-10-12 Mon 10:00>")))
-                (ardentia-test--t "20261011-1200"))))
-      (should (member (aref row 0) '("ready" "later")))
-      (should (or (ardentia-test--has-face (aref row 0) 'ardentia-queue-later)
-                  (ardentia-test--has-face (aref row 0) 'ardentia-queue-ready))))))
+                 :queue 'ready :scheduled "<2026-10-12 Mon 10:00>")
+                now)))
+      (should (equal (substring-no-properties (aref row 0)) "later"))
+      (should (ardentia-test--has-face (aref row 0) 'ardentia-queue-later)))
+    (let ((row (ardentia-test--colored (ardentia-test--task :queue 'ready) now)))
+      (should (equal (substring-no-properties (aref row 0)) "ready"))
+      (should (ardentia-test--has-face (aref row 0) 'ardentia-queue-ready)))))
 
 (ert-deftest ardentia-test-colors-priority-token ()
   (let ((now (ardentia-test--t "20261011-1200"))
@@ -3767,15 +3768,12 @@ Text
       (should (ardentia-test--has-face (aref row 5) 'ardentia-flag-info)))
     (let* ((row (ardentia-test--colored
                  (ardentia-test--task
-                  :queue 'ready
-                  :props '(("SCHEDULED" . "<2026-10-11 Sun 15:05>")))
+                  :queue 'ready :scheduled "<2026-10-11 Sun 15:05>")
                  now))
            (flags (aref row 5)))
-      (when (string-prefix-p "due" flags)
-        (should (ardentia-test--has-face flags 'ardentia-flag-info))))
-    (let ((ardentia-due-display 'relative)
-          (task (ardentia-test--task :queue 'ready)))
-      (ignore task)
+      (should (string-prefix-p "due " (substring-no-properties flags)))
+      (should (ardentia-test--has-face flags 'ardentia-flag-info)))
+    (progn
       (let ((s (ardentia-dashboard--colorize-flags "due in 3h05m" nil)))
         (should (ardentia-test--has-face s 'ardentia-flag-info)))
       (let ((s (ardentia-dashboard--colorize-flags "stale?" nil)))
