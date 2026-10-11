@@ -26,9 +26,10 @@
 ;;; Commentary:
 
 ;; `ardentia-review-task' shows one :humanreview: task in a read-only org
-;; buffer: the TODO state and priority, properties, the newest run report from the LOGBOOK, the notes
-;; the human wrote after it, the child headings (result sections and
-;; open TODOs "for you") and the original task text.  Everything is read
+;; buffer: the TODO state and priority, properties, the newest run
+;; report from the LOGBOOK, the notes the human wrote after it, the child
+;; headings (result sections and open TODOs "for you") and the original
+;; task text.  Everything is read
 ;; from the visiting buffer, not from disk.
 
 ;;; Code:

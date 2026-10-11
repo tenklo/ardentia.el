@@ -207,7 +207,8 @@ review, `q` quit, `?` menu.
 `a` accept, `s` send back (asks for a note), `y` let the agents do an open
 child TODO themselves, `o` visit the heading, `t` session transcript,
 `g` re-render, `q` quit.
-The headline carries the TODO keyword and priority, and the `- Status ::` line shows the keyword and the agents' `AI_STATUS`.
+The headline carries the TODO keyword and priority, and the
+`- Status ::` line shows the keyword and the agents' `AI_STATUS`.
 When the usage properties exist, the section "Agent properties" starts
 with one line such as `- Usage :: 5.4M tokens, $4.09 over 2 runs (last
 run 3.0M tokens, $2.19)`.
