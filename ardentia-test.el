@@ -503,8 +503,49 @@ Text
       (should (string-match-p "\\[\\[id:id-a\\]\\[Result A\\]\\]" text))
       (should (string-match-p "- TODO Decide this :humanreview:" text))
       (should (string-match-p "  - == COMMITS ==\n    - abc1234 something" text))
-      (should (string-match-p "\\* Task one :refile:humanreview:" text))
+      (should (equal (plist-get info :todo) "TODO"))
+      (should (null (plist-get info :priority)))
+      (should (string-match-p "^\\* TODO Task one :refile:humanreview:$" text))
+      (should (string-match-p "^- Status :: TODO, agents: completed$" text))
       (should (string-match-p "Original task text" text)))))
+
+(ert-deftest ardentia-test-review-collect-priority ()
+  (ardentia-test--with-org-file f "* DONE [#B] Prio task :humanreview:
+:PROPERTIES:
+:ID:       id-p
+:END:
+* WAIT Plain task
+:PROPERTIES:
+:ID:       id-q
+:END:
+"
+    (let ((p (ardentia-review--collect f "id-p"))
+          (q (ardentia-review--collect f "id-q")))
+      (should (equal (plist-get p :todo) "DONE"))
+      (should (equal (plist-get p :priority) ?B))
+      (should (equal (plist-get p :title) "Prio task"))
+      (should (equal (plist-get q :todo) "WAIT"))
+      (should (null (plist-get q :priority))))))
+
+(ert-deftest ardentia-test-review-render-state ()
+  (let ((base '(:file "/tmp/x.org" :title "T" :body "")))
+    (let ((text (ardentia-review--render-string
+                 (append '(:todo "TODO" :priority ?A :tags ("a")
+                           :props (("AI_STATUS" . "completed")))
+                         base))))
+      (should (string-match-p "^\\* TODO \\[#A\\] T :a:$" text))
+      (should (string-match-p "^- Status :: TODO, agents: completed$" text)))
+    (let ((text (ardentia-review--render-string base)))
+      (should (string-match-p "^\\* T$" text))
+      (should (string-match-p "^- Status :: no TODO keyword$" text)))
+    (let ((text (ardentia-review--render-string
+                 (append '(:todo "DONE" :props (("AI_STATUS" . "failed"))) base))))
+      (should (string-match-p "^\\* DONE T$" text))
+      (should (string-match-p "^- Status :: DONE, agents: failed$" text)))
+    (should (string-match-p
+             "^- Status :: no TODO keyword, agents: x$"
+             (ardentia-review--render-string
+              (append '(:props (("AI_STATUS" . "x"))) base))))))
 
 (ert-deftest ardentia-test-review-buffer ()
   (ardentia-test--with-org-file f ardentia-test--org

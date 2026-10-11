@@ -26,7 +26,7 @@
 ;;; Commentary:
 
 ;; `ardentia-review-task' shows one :humanreview: task in a read-only org
-;; buffer: properties, the newest run report from the LOGBOOK, the notes
+;; buffer: the TODO state and priority, properties, the newest run report from the LOGBOOK, the notes
 ;; the human wrote after it, the child headings (result sections and
 ;; open TODOs "for you") and the original task text.  Everything is read
 ;; from the visiting buffer, not from disk.
@@ -157,6 +157,9 @@ Return a plist; signal a `user-error' when the heading is missing."
                        (buffer-substring-no-properties
                         (min (point) entry-end) entry-end)))))
          (append (list :file file :id id :title title :tags tags :props props
+                       :todo (org-get-todo-state)
+                       ;; Explicit cookie only; no default priority.
+                       :priority (nth 3 (org-heading-components))
                        :body body)
                  log
                  (ardentia--classify-children (ardentia-review--children))))))))
@@ -174,12 +177,21 @@ Return a plist; signal a `user-error' when the heading is missing."
 (defun ardentia-review--render-string (info)
   "Return the org text for the review data INFO."
   (with-temp-buffer
-    (let ((tags (plist-get info :tags)))
-      (insert "* " (plist-get info :title)
+    (let ((tags (plist-get info :tags))
+          (todo (plist-get info :todo))
+          (prio (plist-get info :priority))
+          (agents (cdr (assoc "AI_STATUS" (plist-get info :props)))))
+      (insert "* "
+              (if todo (concat todo " ") "")
+              (if prio (format "[#%c] " prio) "")
+              (plist-get info :title)
               (if tags (format " :%s:" (string-join tags ":")) "") "\n")
       (insert (format "- File :: [[file:%s][%s]]\n"
                       (abbreviate-file-name (plist-get info :file))
-                      (file-name-nondirectory (plist-get info :file)))))
+                      (file-name-nondirectory (plist-get info :file))))
+      (insert (format "- Status :: %s%s\n"
+                      (or todo "no TODO keyword")
+                      (if agents (format ", agents: %s" agents) ""))))
     (insert "** Agent properties\n")
     (when-let* ((usage (ardentia--usage-line (plist-get info :props))))
       (insert "- Usage :: " usage "\n"))
