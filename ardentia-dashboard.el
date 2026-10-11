@@ -25,8 +25,10 @@
 
 ;;; Commentary:
 
-;; `ardentia-dashboard' lists the agent queues (review, running, ready, later)
-;; in a `tabulated-list-mode' buffer.  `ardentia-review-inbox' is the same
+;; `ardentia-dashboard' lists the agent queues (trouble, review, running, ready,
+;; later) in a `tabulated-list-mode' buffer.  The trouble group holds the
+;; open tasks tagged for errors or sync problems and the running Syncthing
+;; merges; it is absent when there is nothing in it.  `ardentia-review-inbox' is the same
 ;; view filtered to the review queue.  Refreshing is asynchronous.
 ;;
 ;; The header line shows host, timer, refresh time and usage.  In a narrow
@@ -47,6 +49,7 @@
 
 (declare-function ardentia "ardentia" ())
 (declare-function ardentia-completed "ardentia-completed" ())
+(declare-function dired "dired" (dirname &optional switches))
 
 (defvar-local ardentia-dashboard--filter nil
   "Queue symbol this dashboard buffer is restricted to, or nil for all.")
@@ -242,17 +245,21 @@ The symbol `default' means: use the option.")
       ardentia-dashboard-show-later
     ardentia-dashboard--show-later))
 
-(defun ardentia-dashboard--entries (tasks filter now &optional hide-later)
+(defun ardentia-dashboard--entries (tasks filter now &optional hide-later merges)
   "Return `tabulated-list-entries' for TASKS restricted to queue FILTER at NOW.
-With HIDE-LATER, ready tasks that are not yet due are left out."
+With HIDE-LATER, ready tasks that are not yet due are left out, trouble
+tasks never.  MERGES, the running merge rows, are added when FILTER is nil."
   (mapcar (lambda (task) (list task (ardentia--task-row task now)))
           (ardentia--sort-tasks
-           (seq-filter (lambda (tk)
-                         (and (or (null filter)
-                                  (eq (plist-get tk :queue) filter))
-                              (not (and hide-later
-                                        (ardentia--task-later-p tk now)))))
-                       tasks)
+           (append
+            (seq-filter (lambda (tk)
+                          (and (or (null filter)
+                                   (eq (plist-get tk :queue) filter))
+                               (not (and hide-later
+                                         (not (plist-get tk :trouble))
+                                         (ardentia--task-later-p tk now)))))
+                        tasks)
+            (and (null filter) merges))
            now)))
 
 (defvar-keymap ardentia-dashboard-mode-map
@@ -285,7 +292,7 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
 \\{ardentia-dashboard-mode-map}"
   (setq tabulated-list-format
         [("Queue" 8 nil) ("Status" 10 nil) ("Host" 10 nil) ("Att" 4 nil)
-         ("Age" 5 nil) ("Flags" 12 nil) ("Cost" 7 nil :right-align t)
+         ("Age" 5 nil) ("Flags" 16 nil) ("Cost" 7 nil :right-align t)
          ("File" 18 nil) ("Title" 0 nil)])
   (setq tabulated-list-padding 1)
   (setq tabulated-list-sort-key nil)
@@ -309,7 +316,8 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
         (ardentia-dashboard--entries (plist-get ardentia--state :tasks)
                                      ardentia-dashboard--filter
                                      (current-time)
-                                     (not (ardentia-dashboard--show-later-p))))
+                                     (not (ardentia-dashboard--show-later-p))
+                                     (plist-get ardentia--state :merges)))
   (tabulated-list-print t)
   (ardentia-dashboard--update-layout))
 
@@ -393,8 +401,11 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
   (ardentia-dashboard--open "*ardentia-review*" 'review))
 
 (defun ardentia-dashboard--require-task (&optional review)
-  "Return the task at point; with REVIEW require the review queue."
+  "Return the task at point; with REVIEW require the review queue.
+The row of a running merge is not a task and signals a `user-error'."
   (let ((task (or (ardentia-dashboard--task-at-point) (user-error "No task here"))))
+    (when (plist-get task :merge)
+      (user-error "Not a task: a running merge"))
     (when (and review (not (eq (plist-get task :queue) 'review)))
       (user-error "Task is not waiting for review"))
     task))
@@ -450,8 +461,19 @@ Prompt for a letter; SPC removes the cookie."
 ;;;###autoload
 (defun ardentia-dashboard-enter ()
   "Open the task at point: review buffer, or session viewer when running.
-Other queues signal a `user-error'; `t' shows their last transcript."
+Other queues signal a `user-error'; `t' shows their last transcript.
+On a running merge open its directory with dired."
   (interactive)
+  (if (plist-get (ardentia-dashboard--task-at-point) :merge)
+      (ardentia-dashboard--open-merge)
+    (ardentia-dashboard--enter-task)))
+
+(defun ardentia-dashboard--open-merge ()
+  "Open the directory of the running merge at point with dired."
+  (dired (plist-get (ardentia-dashboard--task-at-point) :dir)))
+
+(defun ardentia-dashboard--enter-task ()
+  "Open the task at point, see `ardentia-dashboard-enter'."
   (let ((task (ardentia-dashboard--require-task)))
     (pcase (plist-get task :queue)
       ('review (ardentia-review-task task))
@@ -485,9 +507,12 @@ in agent-shell."
            (if (ardentia-dashboard--show-later-p) "shown" "hidden")))
 
 (defun ardentia-dashboard-visit ()
-  "Visit the heading of the task at point in its org file."
+  "Visit the heading of the task at point in its org file.
+On a running merge open its directory with dired."
   (interactive)
-  (ardentia-visit-task (ardentia-dashboard--require-task)))
+  (if (plist-get (ardentia-dashboard--task-at-point) :merge)
+      (ardentia-dashboard--open-merge)
+    (ardentia-visit-task (ardentia-dashboard--require-task))))
 
 (defun ardentia-dashboard-accept ()
   "Accept the review task at point."

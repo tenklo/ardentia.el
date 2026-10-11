@@ -365,6 +365,194 @@ Original task text
     (should (= (length (ardentia-dashboard--entries tasks nil now)) 2))
     (should (= (length (ardentia-dashboard--entries tasks 'review now)) 1))))
 
+;;;; Trouble queue
+
+(defun ardentia-test--trouble (tags &rest plist)
+  "Build a task plist with TAGS as parsed from org-tool, plus PLIST."
+  (ardentia--task-from-json
+   (append plist
+           `((tags . ,tags) (title . "T") (file . "/o/x.org") (done . :false)
+             (created . "2026-10-09 08:00")))))
+
+(defun ardentia-test--work-dir (&rest names)
+  "Create a temp org directory whose ai/conflicts/work/ holds dirs NAMES."
+  (let ((dir (make-temp-file "ardentia-merges-" t)))
+    (make-directory (expand-file-name "ai/conflicts/work" dir) t)
+    (dolist (n names)
+      (make-directory (expand-file-name n (expand-file-name "ai/conflicts/work" dir)) t))
+    dir))
+
+(ert-deftest ardentia-test-trouble-from-json ()
+  (should (equal (plist-get (ardentia-test--trouble '("auto_error")) :trouble) "error"))
+  (should (equal (plist-get (ardentia-test--trouble '("x" "syncmerge" "aiready")) :trouble)
+                 "merge"))
+  (should (equal (plist-get (ardentia-test--trouble '("gitsync")) :trouble) "gitsync"))
+  (should-not (plist-get (ardentia-test--trouble '("aiready")) :trouble))
+  (should (eq (plist-get (ardentia-test--trouble '("auto_error" "aiready")) :queue)
+              'ready)))
+
+(ert-deftest ardentia-test-trouble-display ()
+  (let ((now (ardentia-test--t "20261010-2000")))
+    (dolist (case '((("auto_error") nil "" "error")
+                    (("auto_error" "humanreview") review "review" "error:review")
+                    (("syncmerge" "ai_in_progress") running "running" "merge:running")
+                    (("gitsync" "aiready") ready "ready" "gitsync:ready")))
+      (let ((task (ardentia-test--trouble (nth 0 case))))
+        (should (eq (plist-get task :queue) (nth 1 case)))
+        (should (eq (ardentia--effective-queue task now) 'trouble))
+        (should (= (ardentia--sort-rank task now) -1))
+        (should (equal (ardentia--queue-name task now) "trouble"))
+        (should (equal (ardentia--task-flags task now) (nth 3 case)))))
+    ;; not yet due: the lifecycle name is later, the flags keep the due time
+    (let ((task (ardentia-test--trouble '("auto_error" "aiready")
+                                        '(scheduled . "<2026-10-11 Sun>"))))
+      (should (equal (ardentia--task-flags task now) "error:later due 10-11")))
+    ;; existing flags follow
+    (let ((task (ardentia-test--trouble
+                 '("auto_error" "humanreview")
+                 '(properties . ((AI_LIMIT_INTERRUPTED . "x"))))))
+      (should (equal (ardentia--task-flags task now) "error:review limit")))
+    ;; non-trouble tasks are untouched
+    (should (equal (ardentia--task-flags (ardentia-test--task :queue 'review) now) ""))))
+
+(ert-deftest ardentia-test-trouble-sorts-first-oldest-first ()
+  (let* ((now (ardentia-test--t "20261010-2000"))
+         (blocked (ardentia-test--task :queue 'review :title "blocked"
+                                       :props '(("AI_STATUS" . "blocked"))))
+         (t-new (ardentia-test--trouble '("gitsync") '(title . "new")
+                                        '(created . "2026-10-10 19:00")))
+         (t-old (ardentia-test--trouble '("auto_error" "aiready") '(title . "old")
+                                        '(created . "2026-10-09 08:00")))
+         (sorted (ardentia--sort-tasks (list blocked t-new t-old) now)))
+    (should (equal (mapcar (lambda (x) (plist-get x :title)) sorted)
+                   '("old" "new" "blocked")))))
+
+(ert-deftest ardentia-test-trouble-leaves-review-alone ()
+  (let* ((now (current-time))
+         (tr (ardentia-test--trouble '("auto_error" "humanreview")))
+         (bare (ardentia-test--trouble '("auto_error")))
+         (tasks (list tr bare (ardentia-test--task :queue 'ready))))
+    (should (= (length (ardentia-dashboard--entries tasks nil now)) 3))
+    ;; the review inbox still shows the trouble task that is in review
+    (should (= (length (ardentia-dashboard--entries tasks 'review now)) 1))
+    (should (eq (car (car (ardentia-dashboard--entries tasks 'review now))) tr))
+    ;; trouble tasks survive hiding later tasks
+    (should (= (length (ardentia-dashboard--entries
+                        (list (ardentia-test--trouble
+                               '("auto_error" "aiready")
+                               '(scheduled . "<2999-01-01 Mon>")))
+                        nil now t))
+               1))
+    ;; the counter counts the review queue only
+    (should (= (length (seq-filter (lambda (tk) (eq (plist-get tk :queue) 'review))
+                                   tasks))
+               1))))
+
+(ert-deftest ardentia-test-merge-file-name ()
+  (should (equal (ardentia--merge-file-name
+                  "20260915-154732-refile.sync-conflict-20260915-051414-5RGYLOM.org.quarantined")
+                 "refile.org"))
+  (should (equal (ardentia--merge-file-name
+                  "20260915-154732-my.notes.sync-conflict-20260915-051414-ABC1234.md.quarantined")
+                 "my.notes.md"))
+  (should (equal (ardentia--merge-file-name
+                  "20260915-154732-todo.sync-conflict-20260915-051414-ABC1234.quarantined")
+                 "todo"))
+  (should (equal (ardentia--merge-file-name "something-else") "something-else"))
+  (should (equal (ardentia--merge-file-name "") "")))
+
+(ert-deftest ardentia-test-list-merges ()
+  (let* ((name "20260915-154732-refile.sync-conflict-20260915-051414-5RGYLOM.org.quarantined")
+         (dir (ardentia-test--work-dir name))
+         (ardentia-org-directory dir))
+    (unwind-protect
+        (progn
+          (write-region "" nil (expand-file-name "ai/conflicts/work/plain.txt" dir))
+          (let ((merges (ardentia--list-merges)))
+            (should (= (length merges) 1))
+            (let ((m (car merges)))
+              (should (plist-get m :merge))
+              (should (equal (plist-get m :file) "refile.org"))
+              (should (equal (plist-get m :title) (concat "Running merge: " name)))
+              (should (file-directory-p (plist-get m :dir)))
+              (should (plist-get m :mtime)))))
+      (delete-directory dir t))
+    ;; missing directory, and a directory that cannot be listed, give nil
+    (let ((ardentia-org-directory "/nonexistent/ardentia-test/"))
+      (should-not (ardentia--list-merges)))
+    (let ((dir (ardentia-test--work-dir "x")))
+      (unwind-protect
+          (let ((ardentia-org-directory dir))
+            (cl-letf (((symbol-function 'directory-files)
+                       (lambda (&rest _) (error "boom"))))
+              (should-not (ardentia--list-merges))))
+        (delete-directory dir t)))))
+
+(ert-deftest ardentia-test-merge-rows ()
+  (let* ((dir (ardentia-test--work-dir
+               "20260915-154732-a.sync-conflict-20260915-051414-AAAAAAA.org.quarantined"))
+         (ardentia-org-directory dir)
+         (now (current-time)))
+    (unwind-protect
+        (let* ((merges (ardentia--list-merges))
+               (m (car merges)))
+          (should (equal (ardentia--task-row m now)
+                         (vector "trouble" "" "" "" "0m" "merging" "" "a.org"
+                                 (plist-get m :title))))
+          (should (eq (ardentia--effective-queue m now) 'trouble))
+          (should (= (ardentia--sort-rank m now) -1))
+          ;; sorted into the trouble rank, before a blocked review task
+          (let* ((blocked (ardentia-test--task :queue 'review
+                                               :props '(("AI_STATUS" . "blocked"))))
+                 (entries (ardentia-dashboard--entries (list blocked) nil now nil merges)))
+            (should (= (length entries) 2))
+            (should (eq (car (car entries)) m))
+            (should (eq (car (cadr entries)) blocked)))
+          ;; the review inbox never lists merges
+          (should-not (ardentia-dashboard--entries nil 'review now nil merges)))
+      (delete-directory dir t))))
+
+(ert-deftest ardentia-test-trouble-group-absent-when-empty ()
+  (let* ((now (current-time))
+         (tasks (list (ardentia-test--task :queue 'review)
+                      (ardentia-test--task :queue 'ready))))
+    (should-not (seq-some (lambda (e) (equal (aref (cadr e) 0) "trouble"))
+                          (ardentia-dashboard--entries tasks nil now nil nil)))))
+
+(ert-deftest ardentia-test-merge-rows-are-not-tasks ()
+  (let ((buf (get-buffer-create " *ardentia-test-merge*"))
+        (merge (list :merge t :dir "/tmp/x/" :name "x" :file "x" :title "Running merge: x"))
+        (ardentia--state nil)
+        dired-arg)
+    (unwind-protect
+        (with-current-buffer buf
+          (ardentia-dashboard-mode)
+          (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
+                     (lambda () merge))
+                    ((symbol-function 'dired)
+                     (lambda (d &rest _) (setq dired-arg d)))
+                    ((symbol-function 'ardentia-visit-task)
+                     (lambda (_) (error "must not visit")))
+                    ((symbol-function 'ardentia-review-task)
+                     (lambda (_) (error "must not review"))))
+            (ardentia-dashboard-enter)
+            (should (equal dired-arg "/tmp/x/"))
+            (setq dired-arg nil)
+            (ardentia-dashboard-visit)
+            (should (equal dired-arg "/tmp/x/"))
+            (dolist (cmd '(ardentia-dashboard-transcript ardentia-dashboard-agent-shell
+                           ardentia-dashboard-accept ardentia-dashboard-send-back
+                           ardentia-dashboard-run ardentia-dashboard-stop
+                           ardentia-dashboard-review ardentia-dashboard-priority
+                           ardentia-dashboard-priority-up
+                           ardentia-dashboard-priority-down))
+              (let ((err (should-error (funcall cmd) :type 'user-error)))
+                (should (equal (cadr err) "Not a task: a running merge"))))
+            ;; commands reached through the current-task function
+            (let ((err (should-error (ardentia--current-task) :type 'user-error)))
+              (should (equal (cadr err) "Not a task: a running merge")))))
+      (kill-buffer buf))))
+
 ;;;; Dashboard buffer
 
 (ert-deftest ardentia-test-dashboard-buffer ()
@@ -1165,7 +1353,7 @@ or, with NO-MULTI-TAG, fails on it like an org-tool that predates the form."
             ;; one combined call, no per-tag calls
             (should (= (length (split-string log "\n" t)) 1))
             (should (string-match-p
-                     "find-tagged aiready|ai_in_progress|humanreview .*a\\.org" log))
+                     "find-tagged aiready|ai_in_progress|humanreview|auto_error|syncmerge|gitsync .*a\\.org" log))
             (should-not (string-match-p "sync-conflict" log))
             (should-not (string-match-p "notes\\.txt" log))))
       (delete-directory dir t))))
@@ -1189,7 +1377,10 @@ or, with NO-MULTI-TAG, fails on it like an org-tool that predates the form."
                        (insert-file-contents (expand-file-name "args.log" dir))
                        (buffer-string))))
             ;; the combined call first, then one call per tag
-            (should (string-match-p "find-tagged aiready|ai_in_progress|humanreview" log))
+            (should (string-match-p
+                     "find-tagged aiready|ai_in_progress|humanreview|auto_error|syncmerge|gitsync"
+                     log))
+            (should (string-match-p "find-tagged gitsync .*a\\.org" log))
             (should (string-match-p "find-tagged humanreview .*a\\.org" log))
             (should (string-match-p "find-tagged aiready .*a\\.org" log))
             (should (string-match-p "find-tagged ai_in_progress .*a\\.org" log))))

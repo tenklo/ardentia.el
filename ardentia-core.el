@@ -89,6 +89,14 @@ Keep it equal to the default priority of the runner (B)."
     ("aiready" . ready))
   "Alist of org tag and queue symbol, most advanced queue first.")
 
+(defconst ardentia--trouble-tags
+  '(("auto_error" . "error")
+    ("syncmerge" . "merge")
+    ("gitsync" . "gitsync"))
+  "Alist of org tag and short kind of the tasks that need attention.
+Such a task is listed in the trouble group of the dashboard, whatever
+its lifecycle tag is.")
+
 ;;;; Pure parts
 
 (defun ardentia--val (value)
@@ -109,6 +117,14 @@ Signal an error when STRING is not valid JSON."
   "Return the queue symbol for the org tag list TAGS, or nil."
   (let (result)
     (dolist (pair ardentia--queue-tags)
+      (when (and (not result) (member (car pair) tags))
+        (setq result (cdr pair))))
+    result))
+
+(defun ardentia--tag-trouble (tags)
+  "Return the trouble kind (a string) for the org tag list TAGS, or nil."
+  (let (result)
+    (dolist (pair ardentia--trouble-tags)
       (when (and (not result) (member (car pair) tags))
         (setq result (cdr pair))))
     result))
@@ -144,7 +160,8 @@ plist then also carries `:done', non-nil for a done element."
             :deadline (ardentia--stringify (alist-get 'deadline alist))
             :created (ardentia--stringify (alist-get 'created alist))
             :props props
-            :queue (ardentia--tag-queue tags)))))
+            :queue (ardentia--tag-queue tags)
+            :trouble (ardentia--tag-trouble tags)))))
 
 (defun ardentia--tasks-from-json (list &optional keep-done)
   "Convert the decoded `org-tool' LIST into task plists.
@@ -260,15 +277,57 @@ Return nil when none of the usage properties holds a usable value."
                    ((< s 86400) (format "%dh" (floor s 3600)))
                    (t (format "%dd" (floor s 86400))))))))
 
+;;;; Running merges
+
+(defun ardentia--merge-p (task)
+  "Return non-nil when TASK is a row of a running merge, not a task."
+  (and (plist-get task :merge) t))
+
+(defun ardentia--merge-file-name (dir-name)
+  "Return the name of the synced file the merge directory DIR-NAME is about.
+DIR-NAME looks like
+`YYYYMMDD-HHMMSS-NAME.sync-conflict-STAMP-DEVICE.EXT.quarantined';
+the result is `NAME.EXT'.  A name of another shape is returned unchanged."
+  (let ((rest (replace-regexp-in-string
+               "\\`[0-9]\\{8\\}-[0-9]\\{6\\}-" "" dir-name)))
+    (if (string-match
+         "\\`\\(.+?\\)\\.sync-conflict-[0-9]+-[0-9]+-[[:alnum:]]+\\(\\.[^/]+?\\)?\\.quarantined\\'"
+         rest)
+        (concat (match-string 1 rest) (or (match-string 2 rest) ""))
+      dir-name)))
+
+(defun ardentia--merge-row-plist (dir)
+  "Return the pseudo task plist of the merge directory DIR."
+  (let ((name (file-name-nondirectory (directory-file-name dir))))
+    (list :merge t :dir dir :name name
+          :file (ardentia--merge-file-name name)
+          :mtime (file-attribute-modification-time (file-attributes dir))
+          :title (concat "Running merge: " name))))
+
+(defun ardentia--list-merges ()
+  "Return the running Syncthing merges as pseudo task plists.
+One merge is a subdirectory of `ai/conflicts/work/' in
+`ardentia-org-directory'; plain files there are not merges.  A missing
+directory or any error gives nil."
+  (condition-case nil
+      (let ((work (expand-file-name "ai/conflicts/work/" ardentia-org-directory)))
+        (when (file-directory-p work)
+          (mapcar #'ardentia--merge-row-plist
+                  (seq-filter #'file-directory-p
+                              (directory-files work t directory-files-no-dot-files-regexp)))))
+    (error nil)))
+
 (defun ardentia--task-stamp (task)
   "Return the time value that defines the age of TASK, or nil.
 Review tasks use AI_SESSION, running tasks AI_CLAIMED, ready tasks the
 creation time."
-  (ardentia--parse-stamp
-   (pcase (plist-get task :queue)
-     ('review (ardentia--task-prop task "AI_SESSION"))
-     ('running (ardentia--task-prop task "AI_CLAIMED"))
-     (_ (plist-get task :created)))))
+  (if (ardentia--merge-p task)
+      (plist-get task :mtime)
+    (ardentia--parse-stamp
+     (pcase (plist-get task :queue)
+       ('review (ardentia--task-prop task "AI_SESSION"))
+       ('running (ardentia--task-prop task "AI_CLAIMED"))
+       (_ (plist-get task :created))))))
 
 (defun ardentia--task-age (task now)
   "Return the age of TASK in seconds relative to NOW, or nil."
@@ -333,8 +392,35 @@ Only tasks of the ready queue can be later."
         (format-time-string "due %H:%M" due)
       (format-time-string "due %m-%d" due))))
 
+(defun ardentia--lifecycle-queue (task &optional now)
+  "Return the lifecycle queue symbol of TASK for display; ready may be `later'.
+A ready task is later when NOW is given and the task is not yet due."
+  (let ((queue (plist-get task :queue)))
+    (if (and now (ardentia--task-later-p task now)) 'later queue)))
+
+(defun ardentia--lifecycle-name (task &optional now)
+  "Return the lifecycle name of TASK (review, running, ready, later) or \"\"."
+  (pcase (ardentia--lifecycle-queue task now)
+    ('review "review") ('running "running") ('ready "ready")
+    ('later "later") (_ "")))
+
 (defun ardentia--task-flags (task now)
-  "Return the flags column value of TASK at time NOW."
+  "Return the flags column value of TASK at time NOW.
+A trouble task starts with KIND:STATE, or just KIND without a lifecycle tag."
+  (if (ardentia--merge-p task)
+      "merging"
+    (let ((flags (ardentia--task-plain-flags task now))
+          (kind (plist-get task :trouble)))
+      (if kind
+          (string-trim
+           (concat kind
+                   (let ((state (ardentia--lifecycle-name task now)))
+                     (if (string-empty-p state) "" (concat ":" state)))
+                   " " flags))
+        flags))))
+
+(defun ardentia--task-plain-flags (task now)
+  "Return the flags column value of TASK at time NOW, without trouble."
   (let (flags)
     (when (ardentia--task-later-p task now)
       (push (ardentia--later-flag task now) flags))
@@ -348,14 +434,17 @@ Only tasks of the ready queue can be later."
 
 (defun ardentia--effective-queue (task &optional now)
   "Return the queue symbol of TASK for display; ready becomes `later'.
-A ready task is later when NOW is given and the task is not yet due."
-  (let ((queue (plist-get task :queue)))
-    (if (and now (ardentia--task-later-p task now)) 'later queue)))
+A ready task is later when NOW is given and the task is not yet due.
+A trouble task or a running merge is in the queue `trouble'."
+  (if (or (plist-get task :trouble) (ardentia--merge-p task))
+      'trouble
+    (ardentia--lifecycle-queue task now)))
 
 (defun ardentia--sort-rank (task &optional now)
-  "Return the sort rank of TASK: review (blocked, partial, rest), running,
-ready, later.  A ready task counts as later only when NOW is given."
+  "Return the sort rank of TASK: trouble, review (blocked, partial, rest),
+running, ready, later.  A ready task counts as later only when NOW is given."
   (pcase (ardentia--effective-queue task now)
+    ('trouble -1)
     ('review (pcase (ardentia--task-prop task "AI_STATUS")
                ("blocked" 0) ("partial" 1) (_ 2)))
     ('running 3)
@@ -366,7 +455,8 @@ ready, later.  A ready task counts as later only when NOW is given."
 (defun ardentia--sort-key (task now)
   "Return the time TASK is sorted by inside its rank, or nil.
 Later tasks use their due time (soonest first), the others their age stamp."
-  (if (and now (ardentia--task-later-p task now))
+  (if (and now (not (plist-get task :trouble))
+           (ardentia--task-later-p task now))
       (ardentia--task-due-time task)
     (ardentia--task-stamp task)))
 
@@ -404,25 +494,28 @@ With NOW, ready tasks that are not yet due sort last, soonest due first."
 
 (defun ardentia--queue-name (task &optional now)
   "Return the queue column value of TASK; \"later\" when not yet due at NOW."
-  (pcase (ardentia--effective-queue task now)
-    ('review "review") ('running "running") ('ready "ready")
-    ('later "later") (_ "")))
+  (if (eq (ardentia--effective-queue task now) 'trouble)
+      "trouble"
+    (ardentia--lifecycle-name task now)))
 
 (defun ardentia--task-row (task now)
   "Return the dashboard row vector for TASK at time NOW.
 The Cost column is empty for a task without usage data."
-  (vector (ardentia--queue-name task now)
-          (or (ardentia--task-prop task "AI_STATUS") "")
-          (ardentia--task-host task)
-          (ardentia--task-attempts task)
-          (ardentia--format-age (ardentia--task-age task now))
-          (ardentia--task-flags task now)
-          (ardentia--format-cost (ardentia--task-cost-total task))
-          (file-name-nondirectory (or (plist-get task :file) ""))
-          (let ((p (ardentia--stringify (plist-get task :priority))))
-            (if p
-                (format "[#%c] %s" (upcase (aref p 0)) (plist-get task :title))
-              (plist-get task :title)))))
+  (if (ardentia--merge-p task)
+      (vector "trouble" "" "" "" (ardentia--format-age (ardentia--task-age task now))
+              "merging" "" (plist-get task :file) (plist-get task :title))
+    (vector (ardentia--queue-name task now)
+            (or (ardentia--task-prop task "AI_STATUS") "")
+            (ardentia--task-host task)
+            (ardentia--task-attempts task)
+            (ardentia--format-age (ardentia--task-age task now))
+            (ardentia--task-flags task now)
+            (ardentia--format-cost (ardentia--task-cost-total task))
+            (file-name-nondirectory (or (plist-get task :file) ""))
+            (let ((p (ardentia--stringify (plist-get task :priority))))
+              (if p
+                  (format "[#%c] %s" (upcase (aref p 0)) (plist-get task :title))
+		(plist-get task :title))))))
 
 (defun ardentia--parse-hosts-conf (string)
   "Parse the contents STRING of aiready-hosts.conf.
@@ -592,7 +685,10 @@ and an error string or nil."
 (defun ardentia--fetch (callback)
   "Fetch all agent tasks asynchronously and call CALLBACK.
 CALLBACK receives the task list and an error string or nil."
-  (ardentia--fetch-tags '("aiready" "ai_in_progress" "humanreview") callback))
+  (ardentia--fetch-tags
+   (append '("aiready" "ai_in_progress" "humanreview")
+           (mapcar #'car ardentia--trouble-tags))
+   callback))
 
 (defvar ardentia--local-host nil
   "Cached name of the local agent host.")
@@ -623,7 +719,8 @@ CALLBACK receives a plist with :last and :next, or nil when unknown."
 ;;;; Shared state and refresh
 
 (defvar ardentia--state nil
-  "Plist of the last refresh: :tasks :host :timer :time :error :refreshing.")
+  "Plist of the last refresh.
+Keys: :tasks :merges :host :timer :time :error :refreshing.")
 
 (defvar ardentia--review-count nil
   "Number of open humanreview tasks at the last refresh, or nil if unknown.")
@@ -642,7 +739,8 @@ When a refresh is already running, CALLBACK joins it."
                  (lambda (results)
                    (pcase-let ((`((,tasks . ,err) ,host ,timer) results))
                      (setq ardentia--state
-                           (list :tasks tasks :host host :timer timer
+                           (list :tasks tasks :merges (ardentia--list-merges)
+                                 :host host :timer timer
                                  :time (current-time) :error err
                                  :refreshing nil))
                      (unless err

@@ -229,9 +229,11 @@ Return non-nil when the task was accepted."
 
 (defun ardentia--current-task ()
   "Return the task at point of the current ardentia buffer or signal an error."
-  (or (and ardentia--current-task-function
-           (funcall ardentia--current-task-function))
-      (user-error "No task here")))
+  (let ((task (and ardentia--current-task-function
+                   (funcall ardentia--current-task-function))))
+    (cond ((null task) (user-error "No task here"))
+          ((plist-get task :merge) (user-error "Not a task: a running merge"))
+          (t task))))
 
 (provide 'ardentia-actions)
 ;;; ardentia-actions.el ends here
