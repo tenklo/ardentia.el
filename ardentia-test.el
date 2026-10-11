@@ -3542,4 +3542,123 @@ Bindings inherited from a parent keymap are not included."
           (should (eq (keymap-lookup (symbol-value map-sym) (car a)) (cdr a))))))
     (should (= n 4))))
 
+;;;; The "For you" line of the run report
+
+(ert-deftest ardentia-test-for-you-forms ()
+  (let ((head "- AI-Lauf [2026-10-11 Sun 18:59] completed: Done \\\\"))
+    (should (equal (ardentia--for-you (list head "  - For you: nothing to do"))
+                   '(:class nothing :text "nothing to do" :lines nil)))
+    (should (equal (ardentia--for-you
+                    (list head "  - For you: REQUIRED -- [[id:x1][Approve it]]"
+                          "  - Details"))
+                   '(:class required :text "REQUIRED -- [[id:x1][Approve it]]"
+                            :lines nil)))
+    (should (equal (plist-get
+                    (ardentia--for-you
+                     (list head "  - For you: optional only -- rename it"))
+                    :class)
+                   'optional))
+    (should (equal (ardentia--for-you
+                    (list head "  - For you: 2 REQUIRED, 1 optional"
+                          "    - REQUIRED: [[id:a][First]]"
+                          "    - optional: keep the name"
+                          "  - Details"))
+                   '(:class required :text "2 REQUIRED, 1 optional"
+                            :lines ("REQUIRED: [[id:a][First]]"
+                                    "optional: keep the name"))))))
+
+(ert-deftest ardentia-test-for-you-absent ()
+  (let ((head "- AI-Lauf [2026-10-11 Sun 18:59] completed: Done \\\\"))
+    (should (null (ardentia--for-you nil)))
+    (should (null (ardentia--for-you (list head))))
+    (should (null (ardentia--for-you (list head "  - Details"))))
+    ;; not the first sub-item
+    (should (null (ardentia--for-you
+                   (list head "  - Details" "  - For you: REQUIRED -- x"))))
+    ;; unrecognised wording
+    (should (null (ardentia--for-you (list head "  - For you: hmm"))))))
+
+(ert-deftest ardentia-test-for-you-older-report-ignored ()
+  (let* ((log "- AI-Lauf [2026-10-11 Sun 18:59] completed: New \\\\
+  - Details
+- AI-Lauf [2026-10-10 Sat 10:00] completed: Old \\\\
+  - For you: REQUIRED -- stale
+")
+         (report (plist-get (ardentia--extract-run-report log) :report)))
+    (should (equal (length report) 2))
+    (should (null (ardentia--for-you report)))))
+
+(defconst ardentia-test--for-you-org "* TODO Task fy :humanreview:
+:PROPERTIES:
+:ID:       id-fy
+:AI_STATUS: completed
+:AI_SESSION: s1
+:END:
+:LOGBOOK:
+- AI-Lauf [2026-10-11 Sun 18:59] completed: Done \\\\
+  - For you: 2 REQUIRED, 1 optional
+    - REQUIRED: [[id:a][First]]
+    - optional: keep the name
+  - Details
+- AI-Lauf [2026-10-10 Sat 10:00] completed: Old \\\\
+  - something
+:END:
+Text
+")
+
+(ert-deftest ardentia-test-for-you-review-header ()
+  (ardentia-test--with-org-file f ardentia-test--for-you-org
+    (let ((text (ardentia-review--render-string (ardentia-review--collect f "id-fy"))))
+      (should (string-match-p
+               "^- Status :: TODO, agents: completed\n- For you :: 2 REQUIRED, 1 optional\n  - REQUIRED: \\[\\[id:a\\]\\[First\\]\\]\n  - optional: keep the name\n\\*\\* Agent properties"
+               text))))
+  (ardentia-test--with-org-file f ardentia-test--org
+    (should-not (string-match-p
+                 "For you ::"
+                 (ardentia-review--render-string (ardentia-review--collect f "id-one"))))))
+
+(ert-deftest ardentia-test-for-you-flag ()
+  (let ((now (ardentia-test--t "20261011-1200")))
+    (should (equal (aref (ardentia--task-row
+                          (ardentia-test--task :queue 'review) now 'required)
+                         5)
+                   "you!"))
+    (should (equal (aref (ardentia--task-row
+                          (ardentia-test--task :queue 'review) now 'optional)
+                         5)
+                   "opt"))
+    (dolist (c '(nothing nil))
+      (should (equal (aref (ardentia--task-row
+                            (ardentia-test--task :queue 'review) now c)
+                           5)
+                     "")))
+    ;; combined with other flags
+    (should (equal (aref (ardentia--task-row
+                          (ardentia-test--task :queue 'review :trouble "error")
+                          now 'required)
+                         5)
+                   "error:review you!"))))
+
+(ert-deftest ardentia-test-for-you-class-cache-and-entries ()
+  (clrhash ardentia-review--for-you-cache)
+  (ardentia-test--with-org-file f ardentia-test--for-you-org
+    (let* ((task (list :title "Task fy" :file f :id "id-fy" :queue 'review :tags nil
+                       :props '(("AI_SESSION" . "s1"))))
+           (now (ardentia-test--t "20261011-1200")))
+      (should (eq (ardentia-review-for-you-class task) 'required))
+      (should (equal (aref (cadr (car (ardentia-dashboard--entries
+                                       (list task) nil now)))
+                           5)
+                     "you!"))
+      ;; cached: the file may change without a new read for the same session
+      (with-temp-file f (insert "* TODO other\n"))
+      (should (eq (ardentia-review-for-you-class task) 'required))
+      ;; a new session reads again
+      (should (null (ardentia-review-for-you-class
+                     (list :file f :id "id-fy" :queue 'review
+                           :props '(("AI_SESSION" . "s2"))))))
+      ;; errors give no flag
+      (should (null (ardentia-review-for-you-class
+                     (list :file "/nonexistent/x.org" :id "q" :queue 'review)))))))
+
 ;;; ardentia-test.el ends here

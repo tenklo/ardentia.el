@@ -567,9 +567,15 @@ With NOW, ready tasks that are not yet due sort last, soonest due first."
       "trouble"
     (ardentia--lifecycle-name task now)))
 
-(defun ardentia--task-row (task now)
+(defun ardentia--for-you-flag (class)
+  "Return the flag for the \"For you\" CLASS: `you!', `opt' or \"\"."
+  (pcase class ('required "you!") ('optional "opt") (_ "")))
+
+(defun ardentia--task-row (task now &optional for-you)
   "Return the dashboard row vector for TASK at time NOW.
-The Cost column is empty for a task without usage data."
+The Cost column is empty for a task without usage data.  FOR-YOU is the
+class of the run report's \"For you\" line (see
+`ardentia-review-for-you-class'); it adds a flag to the Flags column."
   (if (ardentia--merge-p task)
       (vector "trouble" "" "" "" (ardentia--format-age (ardentia--task-age task now))
               "merging" "" (plist-get task :file) (plist-get task :title))
@@ -578,7 +584,8 @@ The Cost column is empty for a task without usage data."
             (ardentia--task-host task)
             (ardentia--task-attempts task)
             (ardentia--format-age (ardentia--task-age task now))
-            (ardentia--task-flags task now)
+            (string-trim (concat (ardentia--task-flags task now) " "
+                                 (ardentia--for-you-flag for-you)))
             (ardentia--format-cost (ardentia--task-cost-total task))
             (file-name-nondirectory (or (plist-get task :file) ""))
             (let ((p (ardentia--stringify (plist-get task :priority))))

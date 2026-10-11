@@ -104,6 +104,36 @@ Notes are the \"Note taken on\" items above the newest report."
                (push (ardentia--dedent-item item) notes)))))
     (list :report report :notes (nreverse notes))))
 
+;;;; Pure parts: the "For you" line
+
+(defun ardentia--for-you (report-lines)
+  "Return the \"For you\" line of the run report REPORT-LINES, or nil.
+REPORT-LINES are the dedented lines of the newest report (the :report of
+`ardentia--extract-run-report').  Only the first sub-item directly after
+the report's first line counts: older reports predate the line and are
+never consulted.  Return a plist (:class :text :lines).  :class is
+`nothing' (text starts with \"nothing to do\"), else `required' (text
+contains \"REQUIRED\"), else `optional' (text contains \"optional\").
+:text is the text after \"For you:\"; :lines are the texts of the
+deeper-indented sub-items below it.  Return nil without a line or for
+an unrecognised one."
+  (let ((line (cadr report-lines)))
+    (when (and line (string-match "\\`\\( *\\)- For you: *\\(.*?\\) *\\'" line))
+      (let* ((base (length (match-string 1 line)))
+             (text (match-string 2 line))
+             (class (cond ((string-prefix-p "nothing to do" text) 'nothing)
+                          ((string-match-p "REQUIRED" text) 'required)
+                          ((string-match-p "optional" text) 'optional)))
+             subs)
+        (when class
+          (catch 'done
+            (dolist (l (cddr report-lines))
+              (if (and (> (ardentia--indentation l) base)
+                       (string-match "\\` *- +\\(.*?\\) *\\'" l))
+                  (push (match-string 1 l) subs)
+                (throw 'done nil))))
+          (list :class class :text text :lines (nreverse subs)))))))
+
 ;;;; Pure parts: children
 
 (defun ardentia--classify-children (children)
@@ -165,6 +195,31 @@ Return a plist; signal a `user-error' when the heading is missing."
                  log
                  (ardentia--classify-children (ardentia-review--children))))))))
 
+;;;; The "For you" class of review rows
+
+(defvar ardentia-review--for-you-cache (make-hash-table :test #'equal)
+  "Cache of `ardentia-review-for-you-class', keyed by (FILE ID AI_SESSION).")
+
+(defun ardentia-review-for-you-class (task)
+  "Return the class of the \"For you\" line of TASK's newest run report.
+The result is `required', `optional', `nothing' or nil (no line).  The
+report is read from the task's buffer once per run (the key is file, ID
+and AI_SESSION).  Any error gives nil and is not cached."
+  (let* ((file (plist-get task :file))
+         (id (plist-get task :id))
+         (key (list file id (ardentia--task-prop task "AI_SESSION")))
+         (hit (gethash key ardentia-review--for-you-cache 'miss)))
+    (if (not (eq hit 'miss))
+        (car hit)
+      (condition-case nil
+          (when (and file id (file-exists-p file))
+            (let* ((info (ardentia-review--collect file id))
+                   (class (plist-get (ardentia--for-you (plist-get info :report))
+                                     :class)))
+              (puthash key (list class) ardentia-review--for-you-cache)
+              class))
+        (error nil)))))
+
 ;;;; Rendering
 
 (defun ardentia-review--link (child)
@@ -192,7 +247,11 @@ Return a plist; signal a `user-error' when the heading is missing."
                       (file-name-nondirectory (plist-get info :file))))
       (insert (format "- Status :: %s%s\n"
                       (or todo "no TODO keyword")
-                      (if agents (format ", agents: %s" agents) ""))))
+                      (if agents (format ", agents: %s" agents) "")))
+      (when-let* ((fy (ardentia--for-you (plist-get info :report))))
+        (insert (format "- For you :: %s\n" (plist-get fy :text)))
+        (dolist (l (plist-get fy :lines))
+          (insert "  - " l "\n"))))
     (insert "** Agent properties\n")
     (when-let* ((usage (ardentia--usage-line (plist-get info :props))))
       (insert "- Usage :: " usage "\n"))

@@ -260,7 +260,11 @@ The symbol `default' means use the option.")
   "Return `tabulated-list-entries' for TASKS restricted to queue FILTER at NOW.
 With HIDE-LATER, ready tasks that are not yet due are left out, trouble
 tasks never.  MERGES, the running merge rows, are added when FILTER is nil."
-  (mapcar (lambda (task) (list task (ardentia--task-row task now)))
+  (mapcar (lambda (task)
+            (list task (ardentia--task-row
+                        task now
+                        (and (eq (plist-get task :queue) 'review)
+                             (ardentia-review-for-you-class task)))))
           (ardentia--sort-tasks
            (append
             (seq-filter (lambda (tk)

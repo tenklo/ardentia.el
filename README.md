@@ -158,6 +158,12 @@ or later task now, `k` stop the running task at point, `c` completed tasks overv
 (`ardentia-dashboard-menu`, grouped, same keys; `.` opens the global menu).
 A refresh keeps point and scroll position on the same task.
 The Cost column shows `AI_COST_USD_TOTAL` for every task that has it.
+For a review task, the Flags column ends with the class of the `For you`
+line of its newest run report: `you!` when the line contains `REQUIRED`,
+`opt` when it only offers optional follow-ups, nothing for `nothing to do`
+or a report without the line. The report is read from the task's buffer
+once per run (cached by file, ID and `AI_SESSION`); a read error shows no
+flag.
 
 Queue `trouble`: what needs attention beyond the normal review. It
 lists every open task tagged `:auto_error:`, `:syncmerge:` or
@@ -301,6 +307,11 @@ The headline carries the TODO keyword and priority, and the
 When the usage properties exist, the section "Agent properties" starts
 with one line such as `- Usage :: 5.4M tokens, $4.09 over 2 runs (last
 run 3.0M tokens, $2.19)`.
+When the newest run report opens with a `- For you:` line (the first
+sub-item right after the `- AI-Lauf [...]` line; older reports are never
+consulted), the header shows it as `- For you :: TEXT`, with the
+deeper-indented sub-items of the multi-item form below it. Org links stay
+clickable. Without such a line nothing is added.
 The buffer uses `org-indent-mode`; set `ardentia-review-indent` to nil to turn that off.
 Long lines wrap by default, independent of `org-startup-truncated`; set `ardentia-review-truncate-lines` to t to truncate them instead, or press `C-x x t` (`toggle-truncate-lines`) in one buffer.
 
