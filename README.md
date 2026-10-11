@@ -36,9 +36,12 @@ tag `NAME_only`.
   array, one object per heading carrying TAG, with the fields `file`,
   `line`, `level`, `todo`, `title`, `tags` (array), `id`, `scheduled`,
   `deadline`, `created`, `done` (boolean) and `properties` (object). A
-  missing value may be JSON `null` or the string `"null"`. Called for
-  `humanreview`, `ai_in_progress` and `aiready` over the `*.org` files in
-  `ardentia-org-directory`.
+  missing value may be JSON `null` or the string `"null"`. Called once
+  with `aiready|ai_in_progress|humanreview` (TAG may be several tags
+  joined by `|`; a heading carrying more than one is listed once) over
+  the `*.org` files in `ardentia-org-directory`. If that call exits
+  non-zero, ardentia falls back to one call per tag, so a program that
+  only knows a single TAG keeps working.
 - `ardentia-host-command`: prints the name of the local computer.
 - `ardentia-hosts-file`: lines `hosts=NAME NAME...` and
   `default_host=NAME`; other lines are ignored.

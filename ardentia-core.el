@@ -523,9 +523,10 @@ The returned function takes (INDEX RESULT)."
       (when (= left 0)
         (funcall done (append results nil))))))
 
-(defun ardentia--fetch-tags (tags callback)
-  "Fetch the open tasks tagged with any of TAGS asynchronously.
-CALLBACK receives the deduplicated task list and an error string or nil."
+(defun ardentia--fetch-tags-separately (tags callback)
+  "Fetch the tasks tagged with any of TAGS with one org-tool call per tag.
+CALLBACK receives the deduplicated task list and an error string or nil.
+This is the fallback for an org-tool that does not know the `a|b|c' form."
   (let ((files (ardentia--org-files)))
     (if (null files)
         (funcall callback nil "no org files found")
@@ -555,6 +556,38 @@ CALLBACK receives the deduplicated task list and an error string or nil."
                       (error (cons nil (format "org-tool %s: bad JSON: %s" tag
                                                (error-message-string e)))))))))))
           (setq i (1+ i)))))))
+
+(defun ardentia--fetch-tags (tags callback)
+  "Fetch the open tasks tagged with any of TAGS asynchronously.
+One `org-tool find-tagged' call with the tags joined by `|' scans the
+org files once instead of once per tag.  If that call fails (an older
+org-tool may not know the form), fall back to one call per tag, which
+reports errors per tag.  CALLBACK receives the deduplicated task list
+and an error string or nil."
+  (let ((files (ardentia--org-files)))
+    (cond
+     ((null files)
+      (funcall callback nil "no org files found"))
+     ((null (cdr tags))
+      (ardentia--fetch-tags-separately tags callback))
+     (t
+      (ardentia--run-async
+       ardentia-org-tool
+       (append (list "find-tagged" (string-join tags "|")) files)
+       (lambda (status out _er)
+         (let ((tasks (and (eql status 0)
+                           (condition-case e
+                               (cons (ardentia--tasks-from-json
+                                      (ardentia--parse-json out))
+                                     nil)
+                             (error (cons nil (error-message-string e)))))))
+           (cond
+            ((not (eql status 0))
+             (ardentia--fetch-tags-separately tags callback))
+            ((cdr tasks)
+             (funcall callback nil
+                      (format "org-tool find-tagged: bad JSON: %s" (cdr tasks))))
+            (t (funcall callback (ardentia--dedupe (car tasks)) nil))))))))))
 
 (defun ardentia--fetch (callback)
   "Fetch all agent tasks asynchronously and call CALLBACK.

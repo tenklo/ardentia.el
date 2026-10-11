@@ -221,8 +221,8 @@ The key `l' toggles this per dashboard buffer."
   "Seconds between automatic refreshes of the dashboards; nil or 0 disables.
 Only dashboards shown in a window on a visible frame are refreshed, and
 never while the minibuffer is active or a refresh is still running.  A
-refresh starts several `org-tool' processes over all org files (a few
-seconds of CPU), so nothing is spent while nobody looks.  The timer
+refresh starts an `org-tool' process over all org files (a second or
+so of CPU), so nothing is spent while nobody looks.  The timer
 starts when a dashboard is opened and stops once the last one is killed."
   :type '(choice (integer :tag "Seconds")
                  (const :tag "Disabled" nil))

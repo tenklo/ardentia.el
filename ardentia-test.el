@@ -1000,8 +1000,10 @@ Text
 
 ;;;; Async fetch with a fake org-tool
 
-(defun ardentia-test--fake-env (dir)
-  "Create the fake org directory with tools in DIR."
+(defun ardentia-test--fake-env (dir &optional no-multi-tag)
+  "Create the fake org directory with tools in DIR.
+The fake org-tool answers a `a|b|c' tag list with the combined output,
+or, with NO-MULTI-TAG, fails on it like an org-tool that predates the form."
   (make-directory (expand-file-name "ai/tools" dir) t)
   (dolist (f '("a.org" "b.org" "c.sync-conflict-20261010-ABC.org" "notes.txt"))
     (write-region "" nil (expand-file-name f dir)))
@@ -1011,6 +1013,14 @@ Text
       (insert "#!/bin/sh\n"
               "echo \"$*\" >> " log "\n"
               "case \"$2\" in\n"
+              (if no-multi-tag
+                  "*'|'*) echo 'Invalid tag' >&2; exit 1 ;;\n"
+                (concat "*'|'*) cat <<'EOF'\n"
+                        "[" (string-trim (string-trim ardentia-test--json "\\[" "\\]"))
+                        ","
+                        "{\"file\":\"/o/b.org\",\"line\":5,\"level\":1,\"todo\":\"null\",\"title\":\"Plain\","
+                        "\"tags\":[\"aiready\"],\"id\":\"null\",\"created\":\"2026-10-09 08:00\",\"done\":false,"
+                        "\"properties\":{}}]\nEOF\n;;\n"))
               "humanreview) cat <<'EOF'\n" ardentia-test--json "\nEOF\n;;\n"
               "aiready) cat <<'EOF'\n"
               "[{\"file\":\"/o/b.org\",\"line\":5,\"level\":1,\"todo\":\"null\",\"title\":\"Plain\","
@@ -1043,16 +1053,43 @@ Text
           ;; aiready (1) + humanreview (1 open, 1 done dropped; the aiready entry
           ;; of b.org line 5 is not duplicated) = 2
           (should (= (length got-tasks) 2))
+          ;; the order is the one org-tool printed (one call, document order)
+          (should (equal (mapcar (lambda (x) (plist-get x :queue)) got-tasks)
+                         '(review ready)))
+          (let ((log (with-temp-buffer
+                       (insert-file-contents (expand-file-name "args.log" dir))
+                       (buffer-string))))
+            ;; one combined call, no per-tag calls
+            (should (= (length (split-string log "\n" t)) 1))
+            (should (string-match-p
+                     "find-tagged aiready|ai_in_progress|humanreview .*a\\.org" log))
+            (should-not (string-match-p "sync-conflict" log))
+            (should-not (string-match-p "notes\\.txt" log))))
+      (delete-directory dir t))))
+
+(ert-deftest ardentia-test-fetch-falls-back-to-per-tag-calls ()
+  (let* ((dir (make-temp-file "ardentia-fake-" t))
+         (ardentia-org-directory dir)
+         (ardentia-org-tool (expand-file-name "ai/tools/org-tool" dir))
+         got-tasks got-err done)
+    (unwind-protect
+        (progn
+          (ardentia-test--fake-env dir t)
+          (ardentia--fetch (lambda (tasks err)
+                             (setq got-tasks tasks got-err err done t)))
+          (ardentia-test--wait (lambda () done))
+          (should (null got-err))
+          (should (= (length got-tasks) 2))
           (should (equal (mapcar (lambda (x) (plist-get x :queue)) got-tasks)
                          '(ready review)))
           (let ((log (with-temp-buffer
                        (insert-file-contents (expand-file-name "args.log" dir))
                        (buffer-string))))
+            ;; the combined call first, then one call per tag
+            (should (string-match-p "find-tagged aiready|ai_in_progress|humanreview" log))
             (should (string-match-p "find-tagged humanreview .*a\\.org" log))
-            (should (string-match-p "find-tagged aiready" log))
-            (should (string-match-p "find-tagged ai_in_progress" log))
-            (should-not (string-match-p "sync-conflict" log))
-            (should-not (string-match-p "notes\\.txt" log))))
+            (should (string-match-p "find-tagged aiready .*a\\.org" log))
+            (should (string-match-p "find-tagged ai_in_progress .*a\\.org" log))))
       (delete-directory dir t))))
 
 (ert-deftest ardentia-test-fetch-failure-reported ()
