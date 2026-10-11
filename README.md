@@ -30,6 +30,14 @@ Accept sets the task to DONE. Send back replaces `humanreview` by
 `aiready` and adds your note. A task can be bound to one computer with a
 tag `NAME_only`.
 
+Three more tags mark trouble, in any lifecycle state or none:
+
+```
+:auto_error:       a run or an automatic step failed
+:syncmerge:        a file sync conflict needs a merge
+:gitsync:          a git sync needs attention
+```
+
 ### What ardentia calls
 
 - `org-tool find-tagged TAG FILE...` (`ardentia-org-tool`): prints a JSON
@@ -37,7 +45,7 @@ tag `NAME_only`.
   `line`, `level`, `todo`, `title`, `tags` (array), `id`, `scheduled`,
   `deadline`, `created`, `done` (boolean) and `properties` (object). A
   missing value may be JSON `null` or the string `"null"`. Called once
-  with `aiready|ai_in_progress|humanreview` (TAG may be several tags
+  with `aiready|ai_in_progress|humanreview|auto_error|syncmerge|gitsync` (TAG may be several tags
   joined by `|`; a heading carrying more than one is listed once) over
   the `*.org` files in `ardentia-org-directory`. If that call exits
   non-zero, ardentia falls back to one call per tag, so a program that
@@ -106,7 +114,7 @@ while `ardentia-mode-line-mode` is on.
 | Command                  | What it does                                         |
 |--------------------------|------------------------------------------------------|
 | `ardentia`               | Transient menu (d r c n D g m, x in org buffers)       |
-| `ardentia-dashboard`     | All queues in `*ardentia*`: review, running, ready, later |
+| `ardentia-dashboard`     | All queues in `*ardentia*`: trouble, review, running, ready, later |
 | `ardentia-review-inbox`  | Same view, only tasks waiting for review             |
 | `ardentia-completed`     | All tasks handed back, accepted or not, with tokens and cost in `*ardentia-completed*` |
 | `ardentia-review-task`   | Read-only org view of one task (run report, notes, child sections) |
@@ -139,6 +147,23 @@ ID and saves the file first),
 `a` accept, `s` send back, `l` hide or show later tasks, `x` run the ready
 or later task now, `k` stop the running task at point, `c` completed tasks overview, `u` fetch the usage now, `q` quit, `?` menu.
 The Cost column shows `AI_COST_USD_TOTAL` for every task that has it.
+
+Queue `trouble`: what needs attention beyond the normal review. It
+lists every open task tagged `:auto_error:`, `:syncmerge:` or
+`:gitsync:` and every running merge, above all other queues, oldest
+first. The Flags column of a task starts with `KIND:STATE`, KIND being
+`error`, `merge` or `gitsync` and STATE the lifecycle (`review`,
+`running`, `ready`, `later`; just KIND without a lifecycle tag). Such a
+task keeps its normal behaviour: it still counts as a review task for
+the review inbox and the mode-line counter when it is tagged
+`:humanreview:`, and later tasks of this group are not hidden by `l`.
+A running merge is a subdirectory of `ai/conflicts/work/` in
+`ardentia-org-directory` (one per merge; plain files there are not
+merges). Its row shows `trouble`, the flag `merging`, the age of the
+directory, the name of the synced file and `Running merge: DIRECTORY`.
+`RET` or `o` on it opens the directory in dired; every other command
+signals "Not a task: a running merge". The group is absent when there is
+nothing in it, and the review inbox never lists merges.
 
 Queue `later`: the runner only picks up an `:aiready:` task once its
 SCHEDULED time is due, so a ready task scheduled in the future is listed
