@@ -234,6 +234,14 @@ Return a plist; signal a `user-error' when the heading is missing."
   :type 'boolean
   :group 'ardentia)
 
+(defcustom ardentia-review-truncate-lines t
+  "Whether review buffers truncate long lines instead of wrapping them.
+Applied each time `ardentia-review-task' shows a buffer, independent
+of `org-startup-truncated'.  Toggle in a buffer with
+\\[toggle-truncate-lines]."
+  :type 'boolean
+  :group 'ardentia)
+
 (defvar-local ardentia-review--task nil
   "Plist (:file :id :title) of the task shown in this review buffer.")
 
@@ -257,6 +265,7 @@ Return a plist; signal a `user-error' when the heading is missing."
 \\{ardentia-review-mode-map}"
   (setq buffer-read-only t)
   (when ardentia-review-indent (org-indent-mode 1))
+  (setq-local truncate-lines ardentia-review-truncate-lines)
   (setq ardentia--current-task-function (lambda () ardentia-review--task)))
 
 (declare-function ardentia "ardentia" ())
@@ -285,6 +294,7 @@ Return a plist; signal a `user-error' when the heading is missing."
          (buf (get-buffer-create (format "*ardentia: %s*" title))))
     (with-current-buffer buf
       (unless (derived-mode-p 'ardentia-review-mode) (ardentia-review-mode))
+      (setq-local truncate-lines ardentia-review-truncate-lines)
       (setq ardentia-review--task
             (list :file (plist-get task :file) :id (plist-get task :id)
                   :title title))

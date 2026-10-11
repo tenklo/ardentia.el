@@ -293,6 +293,7 @@ When the usage properties exist, the section "Agent properties" starts
 with one line such as `- Usage :: 5.4M tokens, $4.09 over 2 runs (last
 run 3.0M tokens, $2.19)`.
 The buffer uses `org-indent-mode`; set `ardentia-review-indent` to nil to turn that off.
+Long lines are truncated by default; set `ardentia-review-truncate-lines` to nil to wrap them instead, or press `C-x x t` (`toggle-truncate-lines`) to toggle it in one buffer.
 
 ### Session transcripts
 

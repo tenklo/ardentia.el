@@ -871,6 +871,34 @@ Text
             (should-not org-indent-mode))
         (kill-buffer buf)))))
 
+(ert-deftest ardentia-test-review-buffer-truncate-lines ()
+  (ardentia-test--with-org-file f ardentia-test--org
+    (let (buf (org-startup-truncated nil)
+              (task (list :file f :id "id-one" :title "Task one")))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (setq buf b))))
+        (ardentia-review-task task)
+        (unwind-protect
+            (with-current-buffer buf
+              (should truncate-lines)
+              ;; A manual toggle survives a re-render.
+              (setq truncate-lines nil)
+              (ardentia-review-render)
+              (should-not truncate-lines)
+              ;; Opening the task again restores the default.
+              (ardentia-review-task task)
+              (should truncate-lines))
+          (kill-buffer buf))))))
+
+(ert-deftest ardentia-test-review-buffer-no-truncate-lines ()
+  (ardentia-test--with-org-file f ardentia-test--org
+    (let (buf (ardentia-review-truncate-lines nil))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (setq buf b))))
+        (ardentia-review-task (list :file f :id "id-one" :title "Task one")))
+      (unwind-protect
+          (with-current-buffer buf
+            (should-not truncate-lines))
+        (kill-buffer buf)))))
+
 ;;;; Mutations
 
 (ert-deftest ardentia-test-accept ()
