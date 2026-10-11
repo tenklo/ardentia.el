@@ -790,6 +790,9 @@ Text
           (ardentia-mode-line-mode 1)
           (should (timerp ardentia--mode-line-timer))
           ;; Re-evaluating the defcustom calls its :set with the timer running.
+          ;; The helper is already defined here; undefine it so that only
+          ;; its position in the file decides whether the reload works.
+          (fmakunbound 'ardentia--mode-line-timer-restart)
           (load file nil t t)
           (should (timerp ardentia--mode-line-timer)))
       (ardentia-mode-line-mode -1)
