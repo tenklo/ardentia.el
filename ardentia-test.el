@@ -573,6 +573,90 @@ Original task text
           (should (string-match-p "Host: desktop" (ardentia-dashboard--info-line))))
       (kill-buffer buf))))
 
+(defun ardentia-test--dash-task (title line &optional props)
+  "Return a minimal ready task plist with TITLE at LINE."
+  (list :file "/tmp/x/a.org" :id title :line line :title title
+        :queue 'ready :props props :tags nil))
+
+(defmacro ardentia-test--with-dash (tasks &rest body)
+  "Run BODY in a dashboard buffer rendered from TASKS."
+  (declare (indent 1))
+  `(let* ((ardentia--state (list :tasks ,tasks :host "desktop" :time (current-time)))
+          (buf (get-buffer-create " *ardentia-test-keep*")))
+     (unwind-protect
+         (with-current-buffer buf
+           (ardentia-dashboard-mode)
+           (ardentia-dashboard--render)
+           ,@body)
+       (kill-buffer buf))))
+
+(defun ardentia-test--goto-title (title)
+  "Move point to the row of the task TITLE."
+  (goto-char (point-min))
+  (while (not (equal (plist-get (ardentia-dashboard--task-at-point) :id) title))
+    (forward-line 1)))
+
+(ert-deftest ardentia-test-dashboard-render-keeps-point ()
+  (ardentia-test--with-dash (list (ardentia-test--dash-task "Aaa" 1)
+                                  (ardentia-test--dash-task "Bbb" 5)
+                                  (ardentia-test--dash-task "Ccc" 9))
+    (ardentia-test--goto-title "Bbb")
+    (setq ardentia--state
+          (list :tasks (list (ardentia-test--dash-task "New" 1)
+                             (ardentia-test--dash-task "Aaa" 4)
+                             (ardentia-test--dash-task "Bbb" 9 '(("X" . "1")))
+                             (ardentia-test--dash-task "Ccc" 13))
+                :host "desktop" :time (current-time)))
+    (ardentia-dashboard--render)
+    (should (equal (plist-get (ardentia-dashboard--task-at-point) :id) "Bbb"))))
+
+(ert-deftest ardentia-test-dashboard-render-removed-row ()
+  (ardentia-test--with-dash (list (ardentia-test--dash-task "Aaa" 1)
+                                  (ardentia-test--dash-task "Bbb" 5)
+                                  (ardentia-test--dash-task "Ccc" 9))
+    (ardentia-test--goto-title "Bbb")
+    (let ((line (line-number-at-pos)))
+      (setq ardentia--state
+            (list :tasks (list (ardentia-test--dash-task "Aaa" 1)
+                               (ardentia-test--dash-task "Ccc" 9))
+                  :host "desktop" :time (current-time)))
+      (ardentia-dashboard--render)
+      (should (> (point) (point-min)))
+      (should (= (line-number-at-pos) line))
+      ;; the last rows disappear: clamp to the last row, not the top
+      (ardentia-test--goto-title "Ccc")
+      (setq ardentia--state
+            (list :tasks (list (ardentia-test--dash-task "Aaa" 1))
+                  :host "desktop" :time (current-time)))
+      (ardentia-dashboard--render)
+      (should (equal (plist-get (ardentia-dashboard--task-at-point) :id) "Aaa")))))
+
+(ert-deftest ardentia-test-dashboard-render-keeps-window-point ()
+  (ardentia-test--with-dash (list (ardentia-test--dash-task "Aaa" 1)
+                                  (ardentia-test--dash-task "Bbb" 5)
+                                  (ardentia-test--dash-task "Ccc" 9))
+    (save-window-excursion
+      (let ((win (selected-window)) (other nil))
+        (set-window-buffer win buf)
+        (setq other (condition-case nil (split-window win) (error nil)))
+        (skip-unless other)
+        (set-window-buffer other buf)
+        (ardentia-test--goto-title "Ccc")
+        (set-window-point other (point))
+        (goto-char (point-min))
+        (set-window-point win (point-min))
+        (setq ardentia--state
+              (list :tasks (list (ardentia-test--dash-task "New" 1)
+                                 (ardentia-test--dash-task "Aaa" 2)
+                                 (ardentia-test--dash-task "Bbb" 6)
+                                 (ardentia-test--dash-task "Ccc" 10))
+                    :host "desktop" :time (current-time)))
+        (ardentia-dashboard--render)
+        (should (equal (plist-get (get-text-property
+                                   (window-point other) 'tabulated-list-id)
+                                  :id)
+                       "Ccc"))))))
+
 (ert-deftest ardentia-test-send-back-adapted-indentation ()
   (ardentia-test--with-org-file f "* TODO Bare :humanreview:
 :PROPERTIES:

@@ -154,6 +154,7 @@ found by its line or, failing that, by its unique title; `x` creates the
 ID and saves the file first),
 `a` accept, `s` send back, `l` hide or show later tasks, `x` run the ready
 or later task now, `k` stop the running task at point, `c` completed tasks overview, `u` fetch the usage now, `q` quit, `?` menu.
+A refresh keeps point and scroll position on the same task.
 The Cost column shows `AI_COST_USD_TOTAL` for every task that has it.
 
 Queue `trouble`: what needs attention beyond the normal review. It

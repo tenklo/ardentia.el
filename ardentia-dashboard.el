@@ -311,6 +311,66 @@ tasks never.  MERGES, the running merge rows, are added when FILTER is nil."
   "Return the task plist of the row at point, or nil."
   (tabulated-list-get-id))
 
+(defun ardentia-dashboard--row-key (id)
+  "Return the stable key of the row ID, a task or merge plist, or nil.
+Unlike the plist itself the key survives edits of the task, such as a
+shifted line number or a changed property."
+  (cond ((null id) nil)
+        ((plist-get id :merge) (list :merge (plist-get id :dir)))
+        (t (ardentia--task-key id))))
+
+(defun ardentia-dashboard--mark-at (pos)
+  "Return the row key, column and line number at POS of the current buffer."
+  (save-excursion
+    (goto-char pos)
+    (list (ardentia-dashboard--row-key (tabulated-list-get-id))
+          (current-column) (line-number-at-pos))))
+
+(defun ardentia-dashboard--remember-positions ()
+  "Return the marks of point and of every window showing the current buffer.
+`tabulated-list-print' erases the buffer, which resets the point and
+start of all its windows, so they are put back by
+`ardentia-dashboard--restore-positions'.  The result is a cons of the
+mark of point and a list of (WINDOW MARK SCROLL-LINES), SCROLL-LINES
+being the number of lines the window start lies above the window point."
+  (cons (ardentia-dashboard--mark-at (point))
+        (mapcar (lambda (win)
+                  (let ((pt (window-point win)))
+                    (list win (ardentia-dashboard--mark-at pt)
+                          (count-lines (window-start win) pt))))
+                (get-buffer-window-list (current-buffer) nil t))))
+
+(defun ardentia-dashboard--goto-mark (mark)
+  "Move point to the row of MARK, a list (KEY COLUMN LINE).
+When the row is gone, go to the same line number, clamped to the last row."
+  (pcase-let ((`(,key ,column ,line) mark))
+    (goto-char (point-min))
+    (unless (and key
+                 (catch 'found
+                   (while (not (eobp))
+                     (when (equal key (ardentia-dashboard--row-key
+                                       (tabulated-list-get-id)))
+                       (throw 'found t))
+                     (forward-line 1))))
+      (goto-char (point-min))
+      (forward-line (1- line))
+      (when (and (eobp) (not (bobp)))
+        (forward-line -1)))
+    (move-to-column column)))
+
+(defun ardentia-dashboard--restore-positions (marks)
+  "Put point and the windows back as recorded in MARKS.
+MARKS is the result of `ardentia-dashboard--remember-positions'."
+  (save-excursion
+    (dolist (entry (cdr marks))
+      (pcase-let ((`(,win ,mark ,scroll) entry))
+        (when (window-live-p win)
+          (ardentia-dashboard--goto-mark mark)
+          (set-window-point win (point))
+          (forward-line (- scroll))
+          (set-window-start win (point) t)))))
+  (ardentia-dashboard--goto-mark (car marks)))
+
 (defun ardentia-dashboard--render ()
   "Fill the current dashboard buffer from `ardentia--state'."
   (setq tabulated-list-entries
@@ -319,8 +379,10 @@ tasks never.  MERGES, the running merge rows, are added when FILTER is nil."
                                      (current-time)
                                      (not (ardentia-dashboard--show-later-p))
                                      (plist-get ardentia--state :merges)))
-  (tabulated-list-print t)
-  (ardentia-dashboard--update-layout))
+  (let ((marks (ardentia-dashboard--remember-positions)))
+    (tabulated-list-print)
+    (ardentia-dashboard--update-layout)
+    (ardentia-dashboard--restore-positions marks)))
 
 (defun ardentia-dashboard--live-buffers ()
   "Return the live dashboard buffers."
