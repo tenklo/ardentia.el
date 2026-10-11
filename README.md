@@ -153,7 +153,7 @@ raise/lower it (ready and later tasks only),
 (also on freshly captured tasks that have no `:ID:` yet: the heading is
 found by its line or, failing that, by its unique title; `x` creates the
 ID and saves the file first),
-`a` accept, `s` send back, `l` hide or show later tasks, `x` run the ready
+`a` accept, `s` send back, `l` hide or show later tasks, `d` toggle the due flag between time left and due date, `x` run the ready
 or later task now, `k` stop the running task at point, `c` completed tasks overview, `u` fetch the usage now, `q` quit, `?` menu of all keys of this buffer
 (`ardentia-dashboard-menu`, grouped, same keys; `.` opens the global menu).
 A refresh keeps point and scroll position on the same task.
@@ -179,7 +179,8 @@ nothing in it, and the review inbox never lists merges.
 Queue `later`: the runner only picks up an `:aiready:` task once its
 SCHEDULED time is due, so a ready task scheduled in the future is listed
 as `later` instead of `ready`. It sorts after the ready tasks, soonest
-due first, and the Flags column shows `due HH:MM` (due today) or
+due first, and the Flags column shows `due in 3h05m` (time until due: `12m`, `3h05m`,
+`2d3h`, minutes rounded up) or, with `absolute`, `due HH:MM` (due today) or
 `due MM-DD`. Only the date and the first `HH:MM` after it count (the
 start of a range; repeater and warning period are ignored). Without a
 time, or with an impossible one (hour above 23, minute above 59), the
@@ -187,6 +188,8 @@ task is due from 00:00 that day; an unparseable timestamp counts as due.
 Review and running tasks, the review inbox and the mode-line counter are
 not affected. `ardentia-dashboard-show-later` (default t) sets whether
 later tasks are listed; `l` toggles it in the current buffer.
+`ardentia-due-display` (default `relative`, or `absolute`) sets the form of
+the due flag; `d` toggles it in the current buffer.
 
 Ready tasks are sorted by priority (`[#A]` first; no cookie counts as
 `ardentia-default-priority`, B), then oldest first. The Title column
@@ -365,7 +368,7 @@ viewer RET uses on a running task.
 `ardentia-org-directory`, `ardentia-org-tool`, `ardentia-host-command`,
 `ardentia-hosts-file`, `ardentia-capture-file`,
 `ardentia-mode-line-interval`, `ardentia-process-timeout`,
-`ardentia-stale-minutes`, `ardentia-dashboard-show-later`,
+`ardentia-stale-minutes`, `ardentia-dashboard-show-later`, `ardentia-due-display`,
 `ardentia-completed-period` (default `all`; also `last-30-days`,
 `last-7-days`, `today`),
 `ardentia-dashboard-refresh-interval` (default 60 seconds, nil or 0 turns the

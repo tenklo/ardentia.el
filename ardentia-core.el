@@ -117,6 +117,19 @@ stored on the `ardentia-menu' property of PREFIX."
   "Minutes after which a claimed (running) task is flagged as stale."
   :type 'integer)
 
+(defcustom ardentia-due-display 'relative
+  "How the dashboard shows when a later task becomes due.
+`relative' shows the time until due, like \"due in 3h05m\".
+`absolute' shows the due time or date, like \"due 18:30\" or \"due 10-12\".
+The key `d' toggles this per dashboard buffer."
+  :type '(choice (const :tag "Time until due" relative)
+                 (const :tag "Due date and time" absolute))
+  :group 'ardentia)
+
+(defvar ardentia--due-display-override nil
+  "When non-nil, `relative' or `absolute' instead of `ardentia-due-display'.
+The dashboard binds it to the choice of the current buffer while rendering.")
+
 (defcustom ardentia-default-priority ?B
   "Priority a task without a cookie counts as when sorting.
 Keep it equal to the default priority of the runner (B)."
@@ -424,12 +437,29 @@ Only tasks of the ready queue can be later."
        (let ((due (ardentia--task-due-time task)))
          (and due (time-less-p now due)))))
 
-(defun ardentia--later-flag (task now)
-  "Return \"due HH:MM\" or \"due MM-DD\" for the later TASK at time NOW."
-  (let ((due (ardentia--task-due-time task)))
-    (if (string= (format-time-string "%F" due) (format-time-string "%F" now))
-        (format-time-string "due %H:%M" due)
-      (format-time-string "due %m-%d" due))))
+(defun ardentia--format-time-left (seconds)
+  "Format SECONDS until due as \"12m\", \"3h05m\" or \"2d3h\".
+Minutes are rounded up, so the result is never \"0m\"."
+  (let* ((minutes (max 1 (ceiling (max 0 seconds) 60)))
+         (hours (/ minutes 60))
+         (days (/ hours 24)))
+    (cond ((< minutes 60) (format "%dm" minutes))
+          ((< hours 24) (format "%dh%02dm" hours (% minutes 60)))
+          (t (format "%dd%dh" days (% hours 24))))))
+
+(defun ardentia--later-flag (task now &optional style)
+  "Return the due flag of the later TASK at time NOW.
+STYLE is `relative' (\"due in 3h05m\") or `absolute' (\"due HH:MM\" or
+\"due MM-DD\"); nil means `ardentia--due-display-override', then
+`ardentia-due-display'."
+  (let ((due (ardentia--task-due-time task))
+        (style (or style ardentia--due-display-override ardentia-due-display)))
+    (cond ((eq style 'relative)
+           (concat "due in " (ardentia--format-time-left
+                              (float-time (time-subtract due now)))))
+          ((string= (format-time-string "%F" due) (format-time-string "%F" now))
+           (format-time-string "due %H:%M" due))
+          (t (format-time-string "due %m-%d" due)))))
 
 (defun ardentia--lifecycle-queue (task &optional now)
   "Return the lifecycle queue symbol of TASK for display; ready may be `later'.

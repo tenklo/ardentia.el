@@ -246,6 +246,16 @@ The symbol `default' means: use the option.")
       ardentia-dashboard-show-later
     ardentia-dashboard--show-later))
 
+(defvar-local ardentia-dashboard--due-display 'default
+  "Buffer-local override of `ardentia-due-display'.
+The symbol `default' means use the option.")
+
+(defun ardentia-dashboard--due-display ()
+  "Return `relative' or `absolute' for this buffer."
+  (if (eq ardentia-dashboard--due-display 'default)
+      ardentia-due-display
+    ardentia-dashboard--due-display))
+
 (defun ardentia-dashboard--entries (tasks filter now &optional hide-later merges)
   "Return `tabulated-list-entries' for TASKS restricted to queue FILTER at NOW.
 With HIDE-LATER, ready tasks that are not yet due are left out, trouble
@@ -287,6 +297,7 @@ Also bound: S-<up> and S-<down> (priority up and down)."
     ("-" "Down (S-<down>)" ardentia-dashboard-priority-down))
    ("View"
     ("g" "Refresh" ardentia-dashboard-refresh)
+    ("d" "Toggle due date/time left" ardentia-dashboard-toggle-due)
     ("c" "Completed" ardentia-completed)
     ("u" "Usage" ardentia-usage-refresh)
     ("q" "Quit" quit-window)))
@@ -388,11 +399,12 @@ MARKS is the result of `ardentia-dashboard--remember-positions'."
 (defun ardentia-dashboard--render ()
   "Fill the current dashboard buffer from `ardentia--state'."
   (setq tabulated-list-entries
-        (ardentia-dashboard--entries (plist-get ardentia--state :tasks)
-                                     ardentia-dashboard--filter
-                                     (current-time)
-                                     (not (ardentia-dashboard--show-later-p))
-                                     (plist-get ardentia--state :merges)))
+        (let ((ardentia--due-display-override (ardentia-dashboard--due-display)))
+          (ardentia-dashboard--entries (plist-get ardentia--state :tasks)
+                                       ardentia-dashboard--filter
+                                       (current-time)
+                                       (not (ardentia-dashboard--show-later-p))
+                                       (plist-get ardentia--state :merges))))
   (let ((marks (ardentia-dashboard--remember-positions)))
     (tabulated-list-print)
     (ardentia-dashboard--update-layout)
@@ -582,6 +594,18 @@ in agent-shell."
   (ardentia-dashboard--render)
   (message "Later tasks: %s"
            (if (ardentia-dashboard--show-later-p) "shown" "hidden")))
+
+(defun ardentia-dashboard-toggle-due ()
+  "Switch the due flag of later tasks in this buffer between time left and date."
+  (interactive)
+  (setq ardentia-dashboard--due-display
+        (if (eq (ardentia-dashboard--due-display) 'relative)
+            'absolute
+          'relative))
+  (ardentia-dashboard--render)
+  (message "Due flag: %s"
+           (if (eq ardentia-dashboard--due-display 'relative)
+               "time until due" "due date/time")))
 
 (defun ardentia-dashboard-visit ()
   "Visit the heading of the task at point in its org file.

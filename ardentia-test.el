@@ -223,7 +223,8 @@ Original task text
     (should (equal sorted '("review" "ready" "near" "far")))))
 
 (ert-deftest ardentia-test-later-flags-row ()
-  (let ((now (ardentia-test--t "20261010-1200")))
+  (let ((now (ardentia-test--t "20261010-1200"))
+        (ardentia-due-display 'absolute))
     (should (equal (ardentia--task-flags
                     (ardentia-test--task :queue 'ready
                                          :scheduled "<2026-10-10 Sat 18:30>")
@@ -262,6 +263,55 @@ Original task text
         (should (ardentia-dashboard--show-later-p))
         (setq ardentia-dashboard--show-later nil)
         (should-not (ardentia-dashboard--show-later-p))))))
+
+(ert-deftest ardentia-test-format-time-left ()
+  (should (equal (ardentia--format-time-left 20) "1m"))
+  (should (equal (ardentia--format-time-left 0) "1m"))
+  (should (equal (ardentia--format-time-left 60) "1m"))
+  (should (equal (ardentia--format-time-left 61) "2m"))
+  (should (equal (ardentia--format-time-left 3540) "59m"))
+  (should (equal (ardentia--format-time-left 3541) "1h00m"))
+  (should (equal (ardentia--format-time-left 3600) "1h00m"))
+  (should (equal (ardentia--format-time-left (+ (* 3 3600) 300)) "3h05m"))
+  (should (equal (ardentia--format-time-left (- 86400 60)) "23h59m"))
+  (should (equal (ardentia--format-time-left 86400) "1d0h"))
+  (should (equal (ardentia--format-time-left (+ (* 2 86400) (* 3 3600) 600))
+                 "2d3h")))
+
+(ert-deftest ardentia-test-later-flag-relative-and-toggle ()
+  (let* ((now (ardentia-test--t "20261010-1200"))
+         (task (ardentia-test--task :queue 'ready
+                                    :scheduled "<2026-10-10 Sat 15:05>"))
+         (far (ardentia-test--task :queue 'ready
+                                   :scheduled "<2026-10-12 Mon 15:00>")))
+    (let ((ardentia-due-display 'relative))
+      (should (equal (ardentia--task-flags task now) "due in 3h05m"))
+      (should (equal (ardentia--task-flags far now) "due in 2d3h"))
+      (should (equal (ardentia--later-flag task now 'absolute) "due 15:05")))
+    (let ((ardentia-due-display 'absolute))
+      (should (equal (ardentia--task-flags task now) "due 15:05"))
+      (should (equal (ardentia--later-flag task now 'relative)
+                     "due in 3h05m")))
+    ;; the default is relative
+    (should (eq (default-value 'ardentia-due-display) 'relative))
+    ;; the dashboard toggle switches the rendered flag and sorting is kept
+    (with-temp-buffer
+      (ardentia-dashboard-mode)
+      (let ((ardentia-due-display 'relative)
+            (ardentia--state (list :tasks (list far task))))
+        (cl-letf (((symbol-function 'ardentia-dashboard--update-layout) #'ignore)
+                  ((symbol-function 'current-time) (lambda () now)))
+          (ardentia-dashboard--render)
+          (should (equal (mapcar (lambda (e) (aref (cadr e) 5))
+                                 tabulated-list-entries)
+                         '("due in 3h05m" "due in 2d3h")))
+          (ardentia-dashboard-toggle-due)
+          (should (eq (ardentia-dashboard--due-display) 'absolute))
+          (should (equal (mapcar (lambda (e) (aref (cadr e) 5))
+                                 tabulated-list-entries)
+                         '("due 15:05" "due 10-12")))
+          (ardentia-dashboard-toggle-due)
+          (should (eq (ardentia-dashboard--due-display) 'relative)))))))
 
 ;;;; Age, host, flags, rows
 
@@ -405,7 +455,8 @@ Original task text
         (should (equal (ardentia--task-flags task now) (nth 3 case)))))
     ;; not yet due: the lifecycle name is later, the flags keep the due time
     (let ((task (ardentia-test--trouble '("auto_error" "aiready")
-                                        '(scheduled . "<2026-10-11 Sun>"))))
+                                        '(scheduled . "<2026-10-11 Sun>")))
+          (ardentia-due-display 'absolute))
       (should (equal (ardentia--task-flags task now) "error:later due 10-11")))
     ;; existing flags follow
     (let ((task (ardentia-test--trouble
