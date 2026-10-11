@@ -37,6 +37,19 @@
   "Timer that refreshes the review counter.")
 
 (defvar ardentia-mode-line-mode)
+(defvar ardentia-mode-line-interval)
+
+(defun ardentia--mode-line-timer-restart (&optional delay)
+  "Cancel the refresh timer; start it again when the mode is on.
+The first run happens after DELAY seconds, default the interval."
+  (when (timerp ardentia--mode-line-timer)
+    (cancel-timer ardentia--mode-line-timer))
+  (setq ardentia--mode-line-timer nil)
+  (when ardentia-mode-line-mode
+    (setq ardentia--mode-line-timer
+          (run-at-time (or delay ardentia-mode-line-interval)
+                       ardentia-mode-line-interval
+                       #'ardentia--mode-line-tick))))
 
 (defcustom ardentia-mode-line-interval 300
   "Seconds between two refreshes of the mode-line counter.
@@ -88,18 +101,6 @@ Changing it via Customize or `setopt' takes effect immediately; a plain
       (ardentia--mode-line-refresh)
     (error (setq ardentia--mode-line-busy nil)
            (message "ardentia: mode-line timer: %s" (error-message-string err)))))
-
-(defun ardentia--mode-line-timer-restart (&optional delay)
-  "Cancel the refresh timer; start it again when the mode is on.
-The first run happens after DELAY seconds, default the interval."
-  (when (timerp ardentia--mode-line-timer)
-    (cancel-timer ardentia--mode-line-timer))
-  (setq ardentia--mode-line-timer nil)
-  (when ardentia-mode-line-mode
-    (setq ardentia--mode-line-timer
-          (run-at-time (or delay ardentia-mode-line-interval)
-                       ardentia-mode-line-interval
-                       #'ardentia--mode-line-tick))))
 
 ;;;###autoload
 (define-minor-mode ardentia-mode-line-mode

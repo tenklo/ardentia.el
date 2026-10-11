@@ -777,6 +777,24 @@ Text
       (ardentia-mode-line-mode -1)
       (set-default 'ardentia-mode-line-interval old))))
 
+(ert-deftest ardentia-test-mode-line-reload-keeps-timer ()
+  (let ((global-mode-string '("")) (ardentia--mode-line-timer nil)
+        (ardentia-org-tool "/nonexistent/org-tool")
+        (old (default-value 'ardentia-mode-line-interval))
+        (file (locate-library "ardentia-modeline.el")))
+    (should file)
+    (unwind-protect
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (&rest _) (timer-create)))
+                  ((symbol-function 'cancel-timer) #'ignore))
+          (ardentia-mode-line-mode 1)
+          (should (timerp ardentia--mode-line-timer))
+          ;; Re-evaluating the defcustom calls its :set with the timer running.
+          (load file nil t t)
+          (should (timerp ardentia--mode-line-timer)))
+      (ardentia-mode-line-mode -1)
+      (set-default 'ardentia-mode-line-interval old))))
+
 (ert-deftest ardentia-test-mode-line-interval-mode-off ()
   (let ((global-mode-string '("")) (ardentia--mode-line-timer nil)
         (old (default-value 'ardentia-mode-line-interval))
