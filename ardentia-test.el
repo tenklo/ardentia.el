@@ -3146,4 +3146,130 @@ otherwise.  It logs the arguments, and the stdin text of a send."
         (ardentia-dashboard--update-layout)
         (should-not ardentia-dashboard--overflow-overlay)))))
 
+;;;; Browsers
+
+(defmacro ardentia-test--with-browse-dirs (&rest body)
+  "Run BODY with the browser directories bound to fresh temp dirs.
+`kdir' and `adir' name the knowledge and the agents directory."
+  (declare (indent 0))
+  `(let* ((root (make-temp-file "ardentia-browse" t))
+          (kdir (file-name-as-directory (expand-file-name "k" root)))
+          (adir (file-name-as-directory (expand-file-name "a" root)))
+          (ardentia-knowledge-directory kdir)
+          (ardentia-agents-directory adir)
+          (ardentia-knowledge-large-file-size 100))
+     (make-directory kdir)
+     (make-directory adir)
+     (unwind-protect (progn ,@body)
+       (delete-directory root t))))
+
+(defun ardentia-test--bwrite (dir name text)
+  "Write TEXT to NAME in DIR and return the full file name."
+  (let ((file (expand-file-name name dir)))
+    (with-temp-file file (insert text))
+    file))
+
+(ert-deftest ardentia-test-frontmatter-full ()
+  (let ((fm (ardentia-browse--frontmatter
+             "---\nname: worker\nmodel: sonnet\nmaxTurns: 30\n---\nbody: x\n")))
+    (should (equal (cdr (assoc "name" fm)) "worker"))
+    (should (equal (cdr (assoc "maxTurns" fm)) "30"))
+    (should-not (assoc "body" fm))))
+
+(ert-deftest ardentia-test-frontmatter-missing-keys ()
+  (let ((fm (ardentia-browse--frontmatter "---\nname: a\n---\n")))
+    (should (equal fm '(("name" . "a"))))
+    (should-not (assoc "model" fm))))
+
+(ert-deftest ardentia-test-frontmatter-none ()
+  (should-not (ardentia-browse--frontmatter "# Title\nname: a\n"))
+  (should-not (ardentia-browse--frontmatter "---\nname: a\n"))
+  (should-not (ardentia-browse--frontmatter "")))
+
+(ert-deftest ardentia-test-frontmatter-colon-in-value ()
+  (let ((fm (ardentia-browse--frontmatter
+             "---\ndescription: Does a: b -- and c\n---\n")))
+    (should (equal (cdr (assoc "description" fm)) "Does a: b -- and c"))))
+
+(ert-deftest ardentia-test-knowledge-rows ()
+  (ardentia-test--with-browse-dirs
+    (ardentia-test--bwrite kdir "small.md" "intro\n# The Title\ntext\n")
+    (ardentia-test--bwrite kdir "big.md"
+                          (concat "# Big\n" (make-string 200 ?x)))
+    (ardentia-test--bwrite kdir ".hidden.md" "# H\n")
+    (ardentia-test--bwrite kdir "small.md~" "# B\n")
+    (let ((entries (ardentia-knowledge--entries)))
+      (should (equal (mapcar (lambda (e) (file-name-nondirectory (car e)))
+                             entries)
+                     '("big.md" "small.md")))
+      (let ((big (cadr (nth 0 entries)))
+            (small (cadr (nth 1 entries))))
+        (should (equal (aref small 4) "The Title"))
+        (should (equal (aref small 3) ""))
+        (should (equal (aref big 3) "grep only"))
+        (should (equal (aref big 4) "Big"))
+        (should (string-match-p "\\`[0-9]+\\(\\.[0-9]\\)?[kM]?\\'"
+                                (aref small 1)))
+        (should (string-match-p "\\`[0-9-]+ [0-9:]+\\'" (aref small 2)))))))
+
+(ert-deftest ardentia-test-knowledge-ret-large-greps ()
+  (ardentia-test--with-browse-dirs
+    (let ((big (ardentia-test--bwrite kdir "big.md" (make-string 500 ?x)))
+          greps visits)
+      (with-temp-buffer
+        (ardentia-knowledge-mode)
+        (ardentia-knowledge-refresh)
+        (goto-char (point-min))
+        (cl-letf (((symbol-function 'ardentia-knowledge--grep)
+                   (lambda (re files) (push (list re files) greps)))
+                  ((symbol-function 'read-regexp) (lambda (&rest _) "foo"))
+                  ((symbol-function 'view-file)
+                   (lambda (f) (push f visits)))
+                  ((symbol-function 'find-file)
+                   (lambda (f) (push f visits))))
+          (ardentia-knowledge-open)))
+      (should-not visits)
+      (should (equal greps (list (list "foo" (list big))))))))
+
+(ert-deftest ardentia-test-knowledge-ret-small-views ()
+  (ardentia-test--with-browse-dirs
+    (let ((small (ardentia-test--bwrite kdir "small.md" "# S\n"))
+          greps visits)
+      (with-temp-buffer
+        (ardentia-knowledge-mode)
+        (ardentia-knowledge-refresh)
+        (goto-char (point-min))
+        (cl-letf (((symbol-function 'ardentia-knowledge--grep)
+                   (lambda (&rest a) (push a greps)))
+                  ((symbol-function 'view-file)
+                   (lambda (f) (push f visits))))
+          (ardentia-knowledge-open)))
+      (should-not greps)
+      (should (equal visits (list small))))))
+
+(ert-deftest ardentia-test-agents-rows ()
+  (ardentia-test--with-browse-dirs
+    (ardentia-test--bwrite
+     adir "worker.md"
+     (concat "---\nname: worker\ndescription: Does x: y\nmodel: sonnet\n"
+             "tools: Read, Write\nomitClaudeMd: true\n"
+             "permissionMode: acceptEdits\nmaxTurns: 30\n---\nbody\n"))
+    (ardentia-test--bwrite adir "plain.md" "no frontmatter\n")
+    (ardentia-test--bwrite adir "notes.txt" "ignored\n")
+    (let ((entries (ardentia-agents--entries)))
+      (should (equal (length entries) 2))
+      (should (equal (cadr (nth 0 entries))
+                     ["plain" "-" "-" "-" "-" "-" "-"]))
+      (should (equal (cadr (nth 1 entries))
+                     ["worker" "sonnet" "Read, Write" "acceptEdits" "30"
+                      "true" "Does x: y"])))))
+
+(ert-deftest ardentia-test-browse-missing-directory ()
+  (let ((ardentia-knowledge-directory "/nonexistent-ardentia-dir/")
+        (ardentia-agents-directory "/nonexistent-ardentia-dir/"))
+    (should-error (ardentia-knowledge--entries) :type 'user-error)
+    (should-error (ardentia-agents--entries) :type 'user-error)
+    (should-error (ardentia-knowledge) :type 'user-error)
+    (should-error (ardentia-agents) :type 'user-error)))
+
 ;;; ardentia-test.el ends here

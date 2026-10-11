@@ -33,6 +33,8 @@
 ;; writes happen in the visiting org buffer.  See README.md.
 ;;
 ;; Optional in-Emacs alert for new review tasks: `ardentia-review-alert'.
+;; Read-only browsers for knowledge files and agents: `ardentia-knowledge',
+;; `ardentia-agents'.
 ;;
 ;; Entry point: `M-x ardentia'.
 
@@ -49,6 +51,7 @@
 (require 'ardentia-run)
 (require 'ardentia-modeline)
 (require 'ardentia-alert)
+(require 'ardentia-browse)
 
 (defun ardentia-refresh-dashboards ()
   "Refresh all ardentia dashboards asynchronously."
@@ -64,6 +67,9 @@
     ("c" "Completed tasks" ardentia-completed)
     ("g" "Refresh" ardentia-refresh-dashboards)
     ("m" "Toggle mode-line counter" ardentia-mode-line-mode)]
+   ["Browse"
+    ("k" "Knowledge" ardentia-knowledge)
+    ("a" "Agents" ardentia-agents)]
    ["Create"
     ("n" "New task" ardentia-new-task)
     ("D" "Delegate region/buffer" ardentia-delegate)]
