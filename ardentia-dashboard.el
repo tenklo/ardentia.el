@@ -39,6 +39,7 @@
 (require 'ardentia-review)
 (require 'ardentia-session)
 (require 'ardentia-run)
+(require 'ardentia-usage)
 
 (declare-function ardentia "ardentia" ())
 (declare-function ardentia-completed "ardentia-completed" ())
@@ -61,7 +62,8 @@
      (format " | Refreshed: %s"
              (if time (format-time-string "%H:%M:%S" time) "never"))
      (if (plist-get st :error) (format " | ERROR: %s" (plist-get st :error)) "")
-     (if (plist-get st :refreshing) " | refreshing..." ""))))
+     (if (plist-get st :refreshing) " | refreshing..." "")
+     (ardentia-usage-header-string))))
 
 (defcustom ardentia-dashboard-show-later t
   "Non-nil means the dashboard lists ready tasks that are not yet due.
@@ -138,7 +140,10 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
   "S-<down>" #'ardentia-dashboard-priority-down
   "q" #'quit-window
   "c" #'ardentia-completed
+  "u" #'ardentia-usage-refresh
   "?" #'ardentia)
+
+(add-hook 'ardentia-usage-updated-hook #'ardentia-dashboard--render-all)
 
 (define-derived-mode ardentia-dashboard-mode tabulated-list-mode "Ardentia"
   "Major mode listing the agent team's queues.
@@ -186,6 +191,9 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
 (defun ardentia-dashboard-refresh-all ()
   "Refresh all dashboard buffers asynchronously."
   (ardentia-refresh #'ardentia-dashboard--render-all)
+  ;; Not part of the join in `ardentia-refresh': a slow network must not
+  ;; delay the task list.  Throttled; re-renders through the hook.
+  (ardentia-usage-maybe-refresh)
   (ardentia-dashboard--render-all))
 
 (defun ardentia-dashboard--visible-p ()

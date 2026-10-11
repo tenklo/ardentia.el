@@ -2142,4 +2142,187 @@ otherwise.  It logs the arguments, and the stdin text of a send."
        (kill-buffer buf)))))
 
 (provide 'ardentia-test)
+;;;; Usage
+
+(defconst ardentia-test--usage-json
+  "{\"five_hour\":{\"utilization\":99.0,\"resets_at\":\"2026-01-01T14:00:00.1+00:00\"},
+ \"extra_usage\":{\"is_enabled\":true,\"monthly_limit\":50.0,\"used_credits\":12.5,\"currency\":\"EUR\"},
+ \"limits\":[{\"kind\":\"session\",\"percent\":42,\"severity\":\"normal\",\"resets_at\":\"2026-01-01T14:00:00.1+00:00\",\"scope\":null,\"is_active\":true},
+  {\"kind\":\"weekly_all\",\"percent\":7,\"severity\":\"normal\",\"resets_at\":\"2026-01-05T04:00:00+00:00\",\"scope\":null},
+  {\"kind\":\"weekly_scoped\",\"percent\":0,\"severity\":\"normal\",\"resets_at\":null,\"scope\":{\"model\":{\"id\":null,\"display_name\":\"IdleModel\"}}},
+  {\"kind\":\"weekly_scoped\",\"percent\":30,\"severity\":\"normal\",\"resets_at\":null,\"scope\":{\"model\":{\"id\":null,\"display_name\":\"SomeModel\"}}}]}"
+  "Invented usage response.")
+
+(defconst ardentia-test--usage-now (encode-time '(0 0 10 1 1 2026 nil nil t))
+  "2026-01-01 10:00 UTC.")
+
+(defun ardentia-test--usage-text (state)
+  "Format STATE in UTC at the fixed test time, without properties."
+  (let ((ardentia-usage--zone "UTC"))
+    (substring-no-properties
+     (ardentia-usage--format state ardentia-test--usage-now))))
+
+(ert-deftest ardentia-test-usage-parse-limits ()
+  (let* ((state (ardentia-usage--parse ardentia-test--usage-json))
+         (limits (plist-get state :limits)))
+    (should (= (length limits) 4))
+    (should (equal (mapcar (lambda (l) (plist-get l :label)) limits)
+                   '("5h" "week" "IdleModel week" "SomeModel week")))
+    (should (= (plist-get (car limits) :percent) 42))
+    (should (plist-get (car limits) :resets-at))
+    (should (plist-get (car limits) :active))
+    (should (equal (plist-get (plist-get state :extra) :currency) "EUR"))))
+
+(ert-deftest ardentia-test-usage-format ()
+  (let ((state (append (list :time ardentia-test--usage-now)
+                       (ardentia-usage--parse ardentia-test--usage-json))))
+    (should (equal (ardentia-test--usage-text state)
+                   (concat "5h 42% (resets 14:00) | week 7% (resets Mon 04:00)"
+                           " | SomeModel week 30% | extra 12.50/50.00 EUR")))
+    (let ((ardentia-usage-hide-idle-scoped nil))
+      (should (string-match-p "IdleModel week 0%"
+                              (ardentia-test--usage-text state))))))
+
+(ert-deftest ardentia-test-usage-fallback-without-limits ()
+  (let ((state (ardentia-usage--parse
+                "{\"five_hour\":{\"utilization\":10.0,\"resets_at\":\"2026-01-01T12:30:00+00:00\"},
+ \"seven_day\":{\"utilization\":3.0,\"resets_at\":null},\"seven_day_opus\":null}")))
+    (should (equal (ardentia-test--usage-text state)
+                   "5h 10% (resets 12:30) | week 3%"))))
+
+(ert-deftest ardentia-test-usage-garbage ()
+  (dolist (json '("" "garbage" "null" "[]" "{}" "{\"limits\":null}"
+                  "{\"five_hour\":null,\"seven_day\":null}"
+                  "{\"limits\":[null,1,\"x\"]}"))
+    (should-not (ardentia-usage--parse json))))
+
+(ert-deftest ardentia-test-usage-extra-disabled ()
+  (let ((state (ardentia-usage--parse
+                "{\"limits\":[{\"kind\":\"session\",\"percent\":1}],
+ \"extra_usage\":{\"is_enabled\":false,\"used_credits\":0.0}}")))
+    (should (equal (ardentia-test--usage-text state) "5h 1%"))))
+
+(ert-deftest ardentia-test-usage-faces ()
+  (let ((ardentia-usage-warn-percent 80))
+    (should-not (ardentia-usage--face 79 "normal"))
+    (should (eq (ardentia-usage--face 80 "normal") 'warning))
+    (should (eq (ardentia-usage--face 10 "warning") 'warning))
+    (should (eq (ardentia-usage--face 100 "normal") 'error))
+    (should (eq (ardentia-usage--face 10 "exceeded") 'error))
+    (should (eq (get-text-property
+                 0 'face (ardentia-usage--format-limit
+                          (list :label "5h" :percent 85)))
+                'warning))))
+
+(ert-deftest ardentia-test-usage-time-format ()
+  (let ((ardentia-usage--zone "UTC"))
+    (should (equal (ardentia-usage--format-time
+                    (encode-time '(0 0 23 1 1 2026 nil nil t))
+                    ardentia-test--usage-now)
+                   "23:00"))
+    (should (equal (ardentia-usage--format-time
+                    (encode-time '(0 30 1 2 1 2026 nil nil t))
+                    ardentia-test--usage-now)
+                   "Fri 01:30"))))
+
+(ert-deftest ardentia-test-usage-stale ()
+  (let ((state (append (list :time (time-subtract ardentia-test--usage-now 720))
+                       (ardentia-usage--parse
+                        "{\"limits\":[{\"kind\":\"session\",\"percent\":1}]}")))
+        (ardentia-usage-min-interval 300))
+    (should (string-suffix-p "(stale 12m)" (ardentia-test--usage-text state)))
+    (let ((ardentia-usage-min-interval 600))
+      (should-not (string-match-p "stale" (ardentia-test--usage-text state))))))
+
+(ert-deftest ardentia-test-usage-result ()
+  (let ((ok (ardentia-usage--result
+             (concat "{\"limits\":[{\"kind\":\"session\",\"percent\":5}]}\n200") 0)))
+    (should-not (plist-get ok :error))
+    (should (plist-get ok :limits)))
+  (should (string-match-p "claude once"
+                          (plist-get (ardentia-usage--result "x\n401" 0) :error)))
+  (should (equal (plist-get (ardentia-usage--result "x\n429" 0) :error) "HTTP 429"))
+  (should (equal (plist-get (ardentia-usage--result "" 6) :error) "no network"))
+  (should (equal (plist-get (ardentia-usage--result "nonsense\n200" 0) :error)
+                 "unexpected response"))
+  (should (string-match-p "unavailable (HTTP 429)"
+                          (ardentia-test--usage-text
+                           (ardentia-usage--result "x\n429" 0)))))
+
+(ert-deftest ardentia-test-usage-pause ()
+  (let ((file (make-temp-file "ardentia-limit"))
+        (ardentia-usage--zone "UTC"))
+    (unwind-protect
+        (progn
+          (with-temp-file file (insert "1767272400\tsession limit\n"))
+          (let ((pause (ardentia-usage--read-pause file)))
+            (should (equal pause '(1767272400 . "session limit")))
+            (should (equal (substring-no-properties
+                            (ardentia-usage--pause-text
+                             pause (seconds-to-time 1767268800)))
+                           "runner paused until 13:00"))
+            (should-not (ardentia-usage--pause-text
+                         pause (seconds-to-time 1767272401))))
+          (with-temp-file file (insert "soon\ttext\n"))
+          (should-not (ardentia-usage--read-pause file))
+          (with-temp-file file (insert ""))
+          (should-not (ardentia-usage--read-pause file))
+          (should-not (ardentia-usage--read-pause (concat file ".absent"))))
+      (delete-file file))))
+
+(ert-deftest ardentia-test-usage-throttle ()
+  (let ((ardentia-usage-enabled t)
+        (ardentia-usage-min-interval 300)
+        (ardentia-usage-limit-state-file nil)
+        (ardentia-usage--last-attempt nil)
+        (ardentia-usage--process nil)
+        (calls 0))
+    (cl-letf (((symbol-function 'ardentia-usage--fetch)
+               (lambda () (cl-incf calls))))
+      (ardentia-usage-maybe-refresh)
+      (should (= calls 1))
+      (ardentia-usage-maybe-refresh)
+      (should (= calls 1))
+      (ardentia-usage-maybe-refresh t)
+      (should (= calls 2))
+      (setq ardentia-usage--last-attempt
+            (time-subtract (current-time) 301))
+      (ardentia-usage-maybe-refresh)
+      (should (= calls 3))
+      (let ((ardentia-usage-enabled nil))
+        (setq ardentia-usage--last-attempt nil)
+        (ardentia-usage-maybe-refresh t)
+        (should (= calls 3))))))
+
+(ert-deftest ardentia-test-usage-fetch-without-credentials ()
+  (let ((ardentia-usage-credentials-file "/nonexistent/credentials.json")
+        (ardentia-usage--state nil)
+        (ardentia-usage-updated-hook nil))
+    (ardentia-usage--fetch)
+    (should (equal (plist-get ardentia-usage--state :error)
+                   "no credentials"))))
+
+(ert-deftest ardentia-test-usage-info-line ()
+  (let* ((ardentia-usage-enabled t)
+         (ardentia-usage--zone "UTC")
+         (ardentia-usage--pause nil)
+         (st (list :host "desktop" :time (current-time)))
+         (ardentia-usage--state nil))
+    (should (string-match-p "Host: desktop"
+                            (ardentia-dashboard--info-line st)))
+    (should-not (string-match-p "5h" (ardentia-dashboard--info-line st)))
+    (setq ardentia-usage--state
+          (append (list :time (current-time))
+                  (ardentia-usage--parse ardentia-test--usage-json))
+          ardentia-usage--pause
+          (cons (+ (floor (float-time)) 3600) "session limit"))
+    (let ((line (substring-no-properties (ardentia-dashboard--info-line st))))
+      (should (string-match-p "Host: desktop" line))
+      (should (string-match-p " | 5h 42% (resets " line))
+      (should (string-match-p "SomeModel week 30%" line))
+      (should (string-match-p "runner paused until " line)))
+    (let ((ardentia-usage-enabled nil))
+      (should-not (string-match-p "5h" (ardentia-dashboard--info-line st))))))
+
+
 ;;; ardentia-test.el ends here

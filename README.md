@@ -117,7 +117,7 @@ raise/lower it (ready and later tasks only),
 found by its line or, failing that, by its unique title; `x` creates the
 ID and saves the file first),
 `a` accept, `s` send back, `l` hide or show later tasks, `x` run the ready
-or later task now, `c` completed tasks overview, `q` quit, `?` menu.
+or later task now, `c` completed tasks overview, `u` fetch the usage now, `q` quit, `?` menu.
 The Cost column shows `AI_COST_USD_TOTAL` for every task that has it.
 
 Queue `later`: the runner only picks up an `:aiready:` task once its
@@ -137,6 +137,45 @@ Ready tasks are sorted by priority (`[#A]` first; no cookie counts as
 shows the cookie like org-agenda. The real order of the runner comes from
 its own order configuration, where priority is one rule after a few
 urgency rules, so the dashboard order is an approximation.
+
+### Usage limits and runner pause
+
+The header line also shows the current Claude usage and, when the runner
+is waiting for its limit to reset, the pause:
+
+```
+... | 5h 42% (resets 14:00) | week 7% (resets Mon 04:00) | SomeModel week 30% | runner paused until 14:00
+```
+
+- Source: `GET https://api.anthropic.com/api/oauth/usage`, the endpoint
+  behind Claude Code's `/usage`. It is undocumented and may change or
+  disappear; every field is treated as optional.
+- The OAuth token is read locally from `~/.claude/.credentials.json`
+  (`claudeAiOauth.accessToken`), kept in a local variable and sent only to
+  that URL. It is handed to `curl` on standard input, so it never shows
+  up in a process list, and it is never logged.
+- The generic `limits` list is preferred (session = `5h`, `weekly_all` =
+  `week`, per-model weekly limits as `<model> week`); without it the
+  `five_hour` and `seven_day` fields are used. Per-model limits at 0% are
+  left out (`ardentia-usage-hide-idle-scoped`). Extra usage appears only
+  when enabled. Reset times are local: `HH:MM` today, otherwise `Ddd HH:MM`.
+- A limit at or above `ardentia-usage-warn-percent` (or with a severity
+  other than normal) uses the `warning` face, at 100% or critical the
+  `error` face. Data older than twice the fetch interval gets
+  `(stale 12m)`.
+- The fetch is asynchronous, runs from the dashboard refresh but is
+  throttled to one per `ardentia-usage-min-interval` seconds (default
+  300); in between the cached value is shown. It is not part of the task
+  list refresh, so a slow network delays nothing. `u` forces a fetch.
+- A failure never raises an error; the line says `usage: unavailable
+  (REASON)` (no network, HTTP status, token expired: run `claude` once to
+  refresh the login, no credentials, curl missing).
+- Runner pause: when the runner hit the session limit it writes
+  `${XDG_STATE_HOME:-~/.local/state}/process-aiready/limit-until`, one line
+  `UNTIL_EPOCH<TAB>TEXT`. While that time lies ahead the line shows
+  `runner paused until HH:MM`. A missing, expired or malformed file means
+  no pause. The path is `ardentia-usage-limit-state-file`.
+- `ardentia-usage-enabled` nil turns the fetch and the usage text off.
 
 ### Keys in the completed view
 
@@ -248,7 +287,11 @@ to restart the timer),
 `ardentia-session-agent-shell-verbosity`,
 `ardentia-session-follow-interval`, `ardentia-session-result-lines`,
 `ardentia-session-line-width`, `ardentia-session-idle-seconds`,
-`ardentia-session-search-limit`.
+`ardentia-session-search-limit`,
+`ardentia-usage-enabled`, `ardentia-usage-credentials-file`,
+`ardentia-usage-url`, `ardentia-usage-min-interval`,
+`ardentia-usage-limit-state-file`, `ardentia-usage-warn-percent`,
+`ardentia-usage-hide-idle-scoped`.
 
 ## Design rules
 
@@ -279,6 +322,7 @@ to restart the timer),
 - `ardentia-completed.el` overview of completed tasks with tokens and cost
 - `ardentia-capture.el` new task and delegate
 - `ardentia-run.el` start the runner on one task now
+- `ardentia-usage.el` usage limits and runner pause in the header line
 - `ardentia-modeline.el` mode-line counter
 - `ardentia.el` entry point and transient menu
 - `ardentia-test.el`, `run-tests` tests
