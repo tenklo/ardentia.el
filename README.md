@@ -119,10 +119,12 @@ while `ardentia-mode-line-mode` is on.
 
 | Command                  | What it does                                         |
 |--------------------------|------------------------------------------------------|
-| `ardentia`               | Transient menu (d r c n D g m, x in org buffers)       |
+| `ardentia`               | Transient menu (d r c k a n D g m, x in org buffers)  |
 | `ardentia-dashboard`     | All queues in `*ardentia*`: trouble, review, running, ready, later |
 | `ardentia-review-inbox`  | Same view, only tasks waiting for review             |
 | `ardentia-completed`     | All tasks handed back, accepted or not, with tokens and cost in `*ardentia-completed*` |
+| `ardentia-knowledge`     | Read-only list of the knowledge files in `*ardentia knowledge*`; large files are grepped, not opened |
+| `ardentia-agents`        | Read-only list of the agent definitions with model, tools and limits in `*ardentia agents*` |
 | `ardentia-review-task`   | Read-only org view of one task (run report, notes, child sections) |
 | `ardentia-session-open` | Read-only, live-following transcript of the agent session of a task |
 | `ardentia-session-open-agent-shell` | Resume that session in `agent-shell` (optional package) |
@@ -257,6 +259,28 @@ days, last 7 days, today; by `AI_SESSION`, so tasks without it only show
 under all), `r` toggle between all tasks and only those still waiting for
 review, `q` quit, `?` menu.
 
+### Knowledge and agent browsers
+
+Both browsers are strictly read-only and read only the head of each file
+to build their lists.
+
+`ardentia-knowledge` (`k` in the menu) lists the regular files of
+`ardentia-knowledge-directory` (not recursive; dotfiles and backups are
+skipped) with Name, Size, Modified and the title (the first `# ` heading).
+Files larger than `ardentia-knowledge-large-file-size` are marked "grep
+only" and are never visited whole by `RET`. Keys: `RET` view a small file
+read-only, or ask for a regexp and grep that one large file in a
+`grep-mode` buffer; `s` grep a regexp over all files; `o` visit the file
+(a large one only after a yes-or-no question); `g` refresh; `q` quit; `?`
+menu.
+
+`ardentia-agents` (`a` in the menu) lists the `*.md` files of
+`ardentia-agents-directory` with the simple `key: value` lines of their
+YAML frontmatter: Name, Model, Tools, Permission (`permissionMode`), Turns
+(`maxTurns`), OmitMd (`omitClaudeMd`) and Description. Missing keys show
+"-"; a file without frontmatter shows its file name. Keys: `RET` view the
+file read-only, `g` refresh, `q` quit, `?` menu.
+
 ### Keys in the review buffer
 
 `a` accept, `s` send back (asks for a note), `y` let the agents do an open
@@ -341,6 +365,8 @@ never while the minibuffer is active or a refresh runs; re-open the dashboard
 to restart the timer),
 `ardentia-timer-unit`, `ardentia-service-unit`,
 `ardentia-run-task-command`, `ardentia-stop-task-command`,
+`ardentia-knowledge-directory`, `ardentia-knowledge-large-file-size`
+(default 100000 bytes), `ardentia-agents-directory`,
 `ardentia-session-directory`, `ardentia-session-viewer`,
 `ardentia-session-say-command`,
 `ardentia-session-agent-shell-verbosity`,
@@ -401,6 +427,7 @@ example a wrapper around `alert` or `notifications-notify`).
 - `ardentia-session.el` session transcript viewer, optional agent-shell
 - `ardentia-dashboard.el` dashboard and review inbox
 - `ardentia-completed.el` overview of completed tasks with tokens and cost
+- `ardentia-browse.el` read-only browsers for knowledge files and agents
 - `ardentia-capture.el` new task and delegate
 - `ardentia-run.el` start the runner on one task now
 - `ardentia-usage.el` usage limits and runner pause in the header line
