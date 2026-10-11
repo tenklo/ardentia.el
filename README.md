@@ -380,6 +380,7 @@ viewer RET uses on a running task.
 `ardentia-hosts-file`, `ardentia-capture-file`,
 `ardentia-mode-line-interval`, `ardentia-process-timeout`,
 `ardentia-stale-minutes`, `ardentia-dashboard-show-later`, `ardentia-due-display`,
+`ardentia-dashboard-colors` (default on, see Colors below),
 `ardentia-completed-period` (default `all`; also `last-30-days`,
 `last-7-days`, `today`),
 `ardentia-dashboard-refresh-interval` (default 60 seconds, nil or 0 turns the
@@ -422,6 +423,32 @@ example a wrapper around `alert` or `notifications-notify`).
   dashboard, so alerts only arrive while one of them is active.
 - Other code can use the abnormal hook `ardentia-review-tasks-functions`,
   which receives the current review tasks after each such refresh.
+
+### Colors
+
+The dashboard colors a few columns, subtly. The faces (customize group
+`ardentia-faces`) inherit theme faces, so they follow light and dark
+themes:
+
+- `ardentia-queue-trouble` (error), `ardentia-queue-review` (keyword),
+  `ardentia-queue-running` (string), `ardentia-queue-ready` (default),
+  `ardentia-queue-later` (shadow): the Queue column
+- `ardentia-status-completed` (success), `ardentia-status-partial`
+  (warning), `ardentia-status-blocked` (error): the Status column
+- `ardentia-priority-highest` (warning) and `ardentia-priority`
+  (constant): the `[#X]` token at the start of the title, the first for
+  `org-priority-highest`
+- `ardentia-flag-attention` (warning): `you!`, `limit`, `stale?` and an
+  attempts count like `3!`
+- `ardentia-flag-trouble` (error): the trouble kind, `merging` and the
+  ERROR text in the header line
+- `ardentia-flag-info` (shadow): `opt`, the due flag and `refreshing...`
+- `ardentia-dashboard-meta` (shadow): Host, Age, Cost and File columns
+
+Change them with `M-x customize-group RET ardentia-faces RET`, or with
+`set-face-attribute` or `custom-set-faces`. Set
+`ardentia-dashboard-colors` to nil for the plain look; it applies at the
+next refresh.
 
 ## Design rules
 

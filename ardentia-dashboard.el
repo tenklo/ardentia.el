@@ -72,6 +72,175 @@ Anything else, including nil, is returned unchanged."
           (concat day " " hm)))
     stamp))
 
+;;;; Colors
+
+(defcustom ardentia-dashboard-colors t
+  "Non-nil means the dashboard uses faces for queue, status, flags and more.
+The faces are in the group `ardentia-faces' and inherit theme faces.
+Nil shows plain text.  Takes effect on the next refresh."
+  :type 'boolean
+  :group 'ardentia)
+
+(defgroup ardentia-faces nil
+  "Faces of the ardentia dashboard."
+  :group 'ardentia)
+
+(defface ardentia-queue-trouble
+  '((t :inherit error :weight normal))
+  "Queue column of a task in trouble."
+  :group 'ardentia-faces)
+
+(defface ardentia-queue-review
+  '((t :inherit font-lock-keyword-face))
+  "Queue column of a task waiting for review."
+  :group 'ardentia-faces)
+
+(defface ardentia-queue-running
+  '((t :inherit font-lock-string-face))
+  "Queue column of a running task."
+  :group 'ardentia-faces)
+
+(defface ardentia-queue-ready
+  '((t nil))
+  "Queue column of a ready task."
+  :group 'ardentia-faces)
+
+(defface ardentia-queue-later
+  '((t :inherit shadow))
+  "Queue column of a task that is not yet due."
+  :group 'ardentia-faces)
+
+(defface ardentia-status-completed
+  '((t :inherit success :weight normal))
+  "Status column of a completed task."
+  :group 'ardentia-faces)
+
+(defface ardentia-status-partial
+  '((t :inherit warning :weight normal))
+  "Status column of a partially completed task."
+  :group 'ardentia-faces)
+
+(defface ardentia-status-blocked
+  '((t :inherit error :weight normal))
+  "Status column of a blocked task."
+  :group 'ardentia-faces)
+
+(defface ardentia-priority-highest
+  '((t :inherit warning :weight normal))
+  "Priority token of the highest priority at the start of a title."
+  :group 'ardentia-faces)
+
+(defface ardentia-priority
+  '((t :inherit font-lock-constant-face))
+  "Priority token of the other priorities at the start of a title."
+  :group 'ardentia-faces)
+
+(defface ardentia-flag-attention
+  '((t :inherit warning :weight normal))
+  "Flags that ask for attention, and an attempt count ending in \"!\"."
+  :group 'ardentia-faces)
+
+(defface ardentia-flag-trouble
+  '((t :inherit error :weight normal))
+  "Trouble kind, merging flag and error text in the header line."
+  :group 'ardentia-faces)
+
+(defface ardentia-flag-info
+  '((t :inherit shadow))
+  "Informational flags: optional follow-up, due time, refreshing."
+  :group 'ardentia-faces)
+
+(defface ardentia-dashboard-meta
+  '((t :inherit shadow))
+  "Host, age, cost and file columns."
+  :group 'ardentia-faces)
+
+(defvar org-priority-highest)
+
+(defun ardentia-dashboard--add-face (string face &optional start end)
+  "Add FACE to STRING between START and END (default all) and return STRING."
+  (add-face-text-property (or start 0) (or end (length string)) face nil string)
+  string)
+
+(defun ardentia-dashboard--maybe-face (string face)
+  "Return STRING with FACE when `ardentia-dashboard-colors' is non-nil."
+  (if ardentia-dashboard-colors
+      (propertize string 'face face)
+    string))
+
+(defun ardentia-dashboard--colorize-flags (flags trouble)
+  "Return a copy of the FLAGS string with faces.
+TROUBLE non-nil means FLAGS starts with the trouble kind."
+  (let ((s (copy-sequence flags))
+        (pos 0))
+    (when (and trouble (string-match "\\`[^ ]+" s))
+      (ardentia-dashboard--add-face s 'ardentia-flag-trouble 0 (match-end 0))
+      (setq pos (match-end 0)))
+    (while (string-match
+            (concat "\\(?:\\`\\| \\)"
+                    "\\(?:\\(you!\\|limit\\|stale\\?\\)\\|\\(merging\\)"
+                    "\\|\\(opt\\|due \\(?:in [0-9a-z]+\\|[0-9:-]+\\)\\)\\)"
+                    "\\(?: \\|\\'\\)")
+            s pos)
+      (let ((face (cond ((match-beginning 1) 'ardentia-flag-attention)
+                        ((match-beginning 2) 'ardentia-flag-trouble)
+                        (t 'ardentia-flag-info)))
+            (beg (or (match-beginning 1) (match-beginning 2)
+                     (match-beginning 3)))
+            (end (or (match-end 1) (match-end 2) (match-end 3))))
+        (ardentia-dashboard--add-face s face beg end)
+        (setq pos end)))
+    s))
+
+(defun ardentia-dashboard--colorize-row (task row _now)
+  "Return a copy of ROW for TASK with faces.  The text stays the same.
+Strings of ROW and TASK are never modified.  Without
+`ardentia-dashboard-colors' ROW is returned as it is."
+  (if (not ardentia-dashboard-colors)
+      row
+    (let* ((out (copy-sequence row))
+           (put (lambda (i face)
+                  (unless (string-empty-p (aref out i))
+                    (aset out i (ardentia-dashboard--add-face
+                                 (copy-sequence (aref out i)) face)))))
+           (queue (aref row 0))
+           (status (aref row 1))
+           (att (aref row 3))
+           (title (aref row 8)))
+      (when-let* ((face (pcase queue
+                          ("trouble" 'ardentia-queue-trouble)
+                          ("review" 'ardentia-queue-review)
+                          ("running" 'ardentia-queue-running)
+                          ("ready" 'ardentia-queue-ready)
+                          ("later" 'ardentia-queue-later))))
+        (funcall put 0 face))
+      (when-let* ((face (pcase status
+                          ("completed" 'ardentia-status-completed)
+                          ("partial" 'ardentia-status-partial)
+                          ("blocked" 'ardentia-status-blocked))))
+        (funcall put 1 face))
+      (dolist (i '(2 4 6 7))
+        (funcall put i 'ardentia-dashboard-meta))
+      (when (string-suffix-p "!" att)
+        (funcall put 3 'ardentia-flag-attention))
+      (unless (string-empty-p (aref row 5))
+        (aset out 5 (ardentia-dashboard--colorize-flags
+                     (aref row 5)
+                     (or (plist-get task :trouble) (ardentia--merge-p task)))))
+      (when (and (plist-get task :priority)
+                 (string-match "\\`\\[#\\(.\\)\\]" title))
+        (let ((highest (char-to-string
+                        (if (boundp 'org-priority-highest)
+                            org-priority-highest
+                          ?A))))
+          (aset out 8 (ardentia-dashboard--add-face
+                       (copy-sequence title)
+                       (if (equal (match-string 1 title) highest)
+                           'ardentia-priority-highest
+                         'ardentia-priority)
+                       0 (match-end 0)))))
+      out)))
+
 (defun ardentia-dashboard--info-segments (&optional state compact now)
   "Return the info line from STATE as a list of strings.
 The first is \" Host: X\", every further one starts with \" | \".  With
@@ -95,8 +264,12 @@ COMPACT the timer times are shortened (see
            (format " | Refreshed: %s"
                    (if time (format-time-string "%H:%M:%S" time) "never")))
      (and (plist-get st :error)
-          (list (format " | ERROR: %s" (plist-get st :error))))
-     (and (plist-get st :refreshing) (list " | refreshing..."))
+          (list (ardentia-dashboard--maybe-face
+                 (format " | ERROR: %s" (plist-get st :error))
+                 'ardentia-flag-trouble)))
+     (and (plist-get st :refreshing)
+          (list (ardentia-dashboard--maybe-face " | refreshing..."
+                                                'ardentia-flag-info)))
      (mapcar (lambda (part) (concat " | " part))
              (split-string usage " | " t)))))
 
@@ -261,10 +434,13 @@ The symbol `default' means use the option.")
 With HIDE-LATER, ready tasks that are not yet due are left out, trouble
 tasks never.  MERGES, the running merge rows, are added when FILTER is nil."
   (mapcar (lambda (task)
-            (list task (ardentia--task-row
-                        task now
-                        (and (eq (plist-get task :queue) 'review)
-                             (ardentia-review-for-you-class task)))))
+            (list task (ardentia-dashboard--colorize-row
+                        task
+                        (ardentia--task-row
+                         task now
+                         (and (eq (plist-get task :queue) 'review)
+                              (ardentia-review-for-you-class task)))
+                        now)))
           (ardentia--sort-tasks
            (append
             (seq-filter (lambda (tk)

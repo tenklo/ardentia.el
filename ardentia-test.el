@@ -3666,4 +3666,167 @@ Text
       (should (null (ardentia-review-for-you-class
                      (list :file "/nonexistent/x.org" :id "q" :queue 'review)))))))
 
+;;;; Dashboard colors
+
+(defun ardentia-test--faces-at (string pos)
+  "Return the list of faces of STRING at POS."
+  (let ((f (get-text-property pos 'face string)))
+    (if (listp f) f (list f))))
+
+(defun ardentia-test--has-face (string face)
+  "Return non-nil when all of STRING has FACE."
+  (and (> (length string) 0)
+       (cl-every (lambda (i) (memq face (ardentia-test--faces-at string i)))
+                 (number-sequence 0 (1- (length string))))))
+
+(defun ardentia-test--any-face (string)
+  "Return non-nil when STRING has a face property anywhere."
+  (text-property-not-all 0 (length string) 'face nil string))
+
+(defun ardentia-test--colored (task now &optional for-you)
+  "Return the colorized row of TASK at NOW."
+  (ardentia-dashboard--colorize-row
+   task (ardentia--task-row task now for-you) now))
+
+(ert-deftest ardentia-test-colors-queue-status ()
+  (let ((now (ardentia-test--t "20261011-1200"))
+        (ardentia-dashboard-colors t))
+    (let ((row (ardentia-test--colored
+                (ardentia-test--task :queue 'review
+                                     :props '(("AI_STATUS" . "blocked")))
+                now)))
+      (should (ardentia-test--has-face (aref row 0) 'ardentia-queue-review))
+      (should (ardentia-test--has-face (aref row 1) 'ardentia-status-blocked)))
+    (let ((row (ardentia-test--colored
+                (ardentia-test--task :queue 'review
+                                     :props '(("AI_STATUS" . "completed")))
+                now)))
+      (should (ardentia-test--has-face (aref row 1) 'ardentia-status-completed)))
+    (let ((row (ardentia-test--colored
+                (ardentia-test--task :queue 'review
+                                     :props '(("AI_STATUS" . "partial")))
+                now)))
+      (should (ardentia-test--has-face (aref row 1) 'ardentia-status-partial)))
+    (let ((row (ardentia-test--colored
+                (ardentia-test--task :queue 'review :trouble "error") now)))
+      (should (ardentia-test--has-face (aref row 0) 'ardentia-queue-trouble)))
+    (let ((row (ardentia-test--colored (ardentia-test--task :queue 'running) now)))
+      (should (ardentia-test--has-face (aref row 0) 'ardentia-queue-running)))
+    (let ((row (ardentia-test--colored
+                (ardentia-test--task
+                 :queue 'ready
+                 :props '(("SCHEDULED" . "<2026-10-12 Mon 10:00>")))
+                (ardentia-test--t "20261011-1200"))))
+      (should (member (aref row 0) '("ready" "later")))
+      (should (or (ardentia-test--has-face (aref row 0) 'ardentia-queue-later)
+                  (ardentia-test--has-face (aref row 0) 'ardentia-queue-ready))))))
+
+(ert-deftest ardentia-test-colors-priority-token ()
+  (let ((now (ardentia-test--t "20261011-1200"))
+        (ardentia-dashboard-colors t))
+    (let* ((row (ardentia-test--colored
+                 (ardentia-test--task :queue 'ready :priority "A") now))
+           (title (aref row 8)))
+      (should (equal (substring-no-properties title) "[#A] T"))
+      (should (ardentia-test--has-face (substring title 0 4)
+                                       'ardentia-priority-highest))
+      (should-not (ardentia-test--any-face (substring title 4))))
+    (let* ((row (ardentia-test--colored
+                 (ardentia-test--task :queue 'ready :priority "B") now))
+           (title (aref row 8)))
+      (should (ardentia-test--has-face (substring title 0 4) 'ardentia-priority))
+      (should-not (ardentia-test--any-face (substring title 4))))
+    (let ((row (ardentia-test--colored
+                (ardentia-test--task :queue 'ready) now)))
+      (should-not (ardentia-test--any-face (aref row 8))))))
+
+(ert-deftest ardentia-test-colors-flags-att-meta ()
+  (let ((now (ardentia-test--t "20261011-1200"))
+        (ardentia-dashboard-colors t))
+    (let* ((row (ardentia-test--colored
+                 (ardentia-test--task :queue 'review :trouble "auto_error"
+                                      :props '(("AI_ATTEMPTS" . "3")
+                                               ("AI_LIMIT_INTERRUPTED" . "t")))
+                 now 'required))
+           (flags (aref row 5)))
+      (should (equal (substring-no-properties flags)
+                     "auto_error:review limit you!"))
+      (should (ardentia-test--has-face (substring flags 0 17)
+                                       'ardentia-flag-trouble))
+      (should (ardentia-test--has-face (substring flags 18 23)
+                                       'ardentia-flag-attention))
+      (should (ardentia-test--has-face (substring flags 24)
+                                       'ardentia-flag-attention))
+      (should-not (ardentia-test--any-face (substring flags 17 18)))
+      (should (equal (substring-no-properties (aref row 3)) "3!"))
+      (should (ardentia-test--has-face (aref row 3) 'ardentia-flag-attention))
+      (should (ardentia-test--has-face (aref row 2) 'ardentia-dashboard-meta))
+      (should (ardentia-test--has-face (aref row 7) 'ardentia-dashboard-meta)))
+    (let ((row (ardentia-test--colored
+                (ardentia-test--task :queue 'review) now 'optional)))
+      (should (ardentia-test--has-face (aref row 5) 'ardentia-flag-info)))
+    (let* ((row (ardentia-test--colored
+                 (ardentia-test--task
+                  :queue 'ready
+                  :props '(("SCHEDULED" . "<2026-10-11 Sun 15:05>")))
+                 now))
+           (flags (aref row 5)))
+      (when (string-prefix-p "due" flags)
+        (should (ardentia-test--has-face flags 'ardentia-flag-info))))
+    (let ((ardentia-due-display 'relative)
+          (task (ardentia-test--task :queue 'ready)))
+      (ignore task)
+      (let ((s (ardentia-dashboard--colorize-flags "due in 3h05m" nil)))
+        (should (ardentia-test--has-face s 'ardentia-flag-info)))
+      (let ((s (ardentia-dashboard--colorize-flags "stale?" nil)))
+        (should (ardentia-test--has-face s 'ardentia-flag-attention)))
+      (let ((s (ardentia-dashboard--colorize-flags "merging" t)))
+        (should (ardentia-test--has-face s 'ardentia-flag-trouble))))))
+
+(ert-deftest ardentia-test-colors-off-and-no-mutation ()
+  (let* ((now (ardentia-test--t "20261011-1200"))
+         (title (copy-sequence "Title"))
+         (task (ardentia-test--task :queue 'review :priority "A" :title title
+                                    :trouble "error"
+                                    :props '(("AI_STATUS" . "blocked")
+                                             ("AI_ATTEMPTS" . "4"))))
+         (plain (ardentia--task-row task now 'required)))
+    (let ((ardentia-dashboard-colors t))
+      (let ((row (ardentia-dashboard--colorize-row task plain now)))
+        (should (equal row plain))
+        (should (ardentia-test--any-face (aref row 0)))
+        (should-not (ardentia-test--any-face title))
+        (should-not (cl-some #'ardentia-test--any-face plain))))
+    (let ((ardentia-dashboard-colors nil))
+      (let ((row (ardentia-dashboard--colorize-row task plain now)))
+        (should (equal row plain))
+        (should-not (cl-some #'ardentia-test--any-face row))))))
+
+(ert-deftest ardentia-test-colors-header-error ()
+  (let* ((ardentia-usage-enabled nil)
+         (st (list :host "desktop" :error "boom 100%" :refreshing t)))
+    (let* ((ardentia-dashboard-colors t)
+           (segs (ardentia-dashboard--info-segments st))
+           (err (seq-find (lambda (x) (string-match-p "ERROR" x)) segs))
+           (ref (seq-find (lambda (x) (string-match-p "refreshing" x)) segs)))
+      (should (ardentia-test--has-face err 'ardentia-flag-trouble))
+      (should (ardentia-test--has-face ref 'ardentia-flag-info))
+      (should (equal (substring-no-properties err) " | ERROR: boom 100%"))
+      (let ((esc (ardentia-dashboard--escape-percent err)))
+        (should (equal (substring-no-properties esc) " | ERROR: boom 100%%"))
+        (should (memq 'ardentia-flag-trouble
+                      (ardentia-test--faces-at esc (1- (length esc)))))))
+    (let* ((ardentia-dashboard-colors nil)
+           (segs (ardentia-dashboard--info-segments st)))
+      (should-not (cl-some #'ardentia-test--any-face segs)))))
+
+(ert-deftest ardentia-test-colors-entries ()
+  (let ((now (ardentia-test--t "20261011-1200"))
+        (ardentia-dashboard-colors t))
+    (let* ((task (ardentia-test--task :queue 'running))
+           (entries (ardentia-dashboard--entries (list task) nil now)))
+      (should (ardentia-test--has-face (aref (cadar entries) 0)
+                                       'ardentia-queue-running))
+      (should (equal (cadar entries) (ardentia--task-row task now))))))
+
 ;;; ardentia-test.el ends here
