@@ -3515,17 +3515,22 @@ Bindings inherited from a parent keymap are not included."
       (dolist (e entries)
         (should (eq (ardentia-test--suffix-command prefix (nth 0 e)) (nth 2 e)))
         (should (eq (keymap-lookup map (nth 0 e)) (nth 2 e))))
-      ;; global dispatch entry, on a key bound in no mode map
+      ;; global dispatch entry, also bound directly in the mode map
       (should (eq (ardentia-test--suffix-command prefix ".") 'ardentia))
-      (should-not (keymap-lookup map "."))
+      (should (eq (keymap-lookup map ".") 'ardentia))
       ;; keymap -> menu: every binding is in the menu, an alternate or "?"
       (let ((bindings (ardentia-test--map-bindings map)))
-        (should (>= (length bindings) (1+ minimum)))
+        (should (>= (length bindings) (+ 2 minimum)))
         (dolist (b bindings)
           (unless (equal (car b) "?")
             (should (or (equal (ardentia-test--suffix-command prefix (car b))
                                (cdr b))
                         (equal (cdr (assoc (car b) alternates)) (cdr b))))))))))
+
+(ert-deftest ardentia-test-compose-map-keeps-dot-free ()
+  "The compose buffer is for typing text, so `.' must self-insert there."
+  (should-not (eq (keymap-lookup ardentia-session-compose-mode-map ".")
+                  'ardentia)))
 
 (ert-deftest ardentia-test-help-menus-alternates-agree ()
   "Alternate keys are bound to a command the menu offers."

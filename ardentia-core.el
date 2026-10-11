@@ -49,9 +49,9 @@ ARGS is a plist.  `:keymap-doc' and `:menu-doc' are the docstrings of the
 keymap and of the transient PREFIX.  `:groups' is a list of columns,
 each (TITLE (KEY DESCRIPTION COMMAND)...); every entry is bound to KEY
 in MAP and shown under KEY in the menu.  `:alternates' is a list of
-(KEY . COMMAND) bound in MAP only.  `?' is bound to PREFIX, which also
-offers the global `ardentia' dispatch menu on `.'.  The groups are
-stored on the `ardentia-menu' property of PREFIX."
+(KEY . COMMAND) bound in MAP only.  `?' is bound to PREFIX and `.' to the
+global `ardentia' dispatch menu, which PREFIX also offers on `.'.
+The groups are stored on the `ardentia-menu' property of PREFIX."
   (declare (indent 2))
   (let* ((groups (plist-get args :groups))
          (alternates (plist-get args :alternates))
@@ -63,7 +63,8 @@ stored on the `ardentia-menu' property of PREFIX."
                    groups)
            (mapcan (lambda (a) (list (car a) (list 'function (cdr a))))
                    alternates)
-           (list "?" (list 'function prefix))))
+           (list "?" (list 'function prefix)
+                 "." (list 'function 'ardentia))))
          (columns
           (append
            (mapcar (lambda (g) (apply #'vector (car g) (cdr g))) groups)
