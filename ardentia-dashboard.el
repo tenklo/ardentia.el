@@ -28,8 +28,8 @@
 ;; `ardentia-dashboard' lists the agent queues (trouble, review, running, ready,
 ;; later) in a `tabulated-list-mode' buffer.  The trouble group holds the
 ;; open tasks tagged for errors or sync problems and the running Syncthing
-;; merges; it is absent when there is nothing in it.  `ardentia-review-inbox' is the same
-;; view filtered to the review queue.  Refreshing is asynchronous.
+;; merges; it is absent when there is nothing in it.
+;; `ardentia-review-inbox' is the same view filtered to the review queue.  Refreshing is asynchronous.
 ;;
 ;; The header line shows host, timer, refresh time and usage.  In a narrow
 ;; window the timer times are shortened and what still does not fit moves

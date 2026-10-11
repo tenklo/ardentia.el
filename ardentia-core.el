@@ -515,7 +515,7 @@ The Cost column is empty for a task without usage data."
             (let ((p (ardentia--stringify (plist-get task :priority))))
               (if p
                   (format "[#%c] %s" (upcase (aref p 0)) (plist-get task :title))
-		(plist-get task :title))))))
+                (plist-get task :title))))))
 
 (defun ardentia--parse-hosts-conf (string)
   "Parse the contents STRING of aiready-hosts.conf.
