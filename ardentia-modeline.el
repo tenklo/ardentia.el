@@ -33,9 +33,20 @@
 (require 'seq)
 (require 'ardentia-core)
 
+(defvar ardentia--mode-line-timer nil
+  "Timer that refreshes the review counter.")
+
+(defvar ardentia-mode-line-mode)
+
 (defcustom ardentia-mode-line-interval 300
-  "Seconds between two refreshes of the mode-line counter."
+  "Seconds between two refreshes of the mode-line counter.
+Changing it via Customize or `setopt' takes effect immediately; a plain
+`setq' only applies after toggling `ardentia-mode-line-mode'."
   :type 'integer
+  :set (lambda (sym val)
+         (set-default sym val)
+         (when (timerp ardentia--mode-line-timer)
+           (ardentia--mode-line-timer-restart)))
   :group 'ardentia)
 
 (defface ardentia-mode-line '((t :inherit warning :weight bold))
@@ -44,9 +55,6 @@
 
 (defconst ardentia--mode-line-construct '(:eval (ardentia--mode-line-string))
   "The element added to `global-mode-string'.")
-
-(defvar ardentia--mode-line-timer nil
-  "Timer that refreshes the review counter.")
 
 (defvar ardentia--mode-line-busy nil
   "Non-nil while a counter refresh is running.")
@@ -81,14 +89,23 @@
     (error (setq ardentia--mode-line-busy nil)
            (message "ardentia: mode-line timer: %s" (error-message-string err)))))
 
+(defun ardentia--mode-line-timer-restart (&optional delay)
+  "Cancel the refresh timer; start it again when the mode is on.
+The first run happens after DELAY seconds, default the interval."
+  (when (timerp ardentia--mode-line-timer)
+    (cancel-timer ardentia--mode-line-timer))
+  (setq ardentia--mode-line-timer nil)
+  (when ardentia-mode-line-mode
+    (setq ardentia--mode-line-timer
+          (run-at-time (or delay ardentia-mode-line-interval)
+                       ardentia-mode-line-interval
+                       #'ardentia--mode-line-tick))))
+
 ;;;###autoload
 (define-minor-mode ardentia-mode-line-mode
   "Show the number of tasks waiting for review in the mode line."
   :global t
   :group 'ardentia
-  (when (timerp ardentia--mode-line-timer)
-    (cancel-timer ardentia--mode-line-timer)
-    (setq ardentia--mode-line-timer nil))
   (setq global-mode-string
         (delete ardentia--mode-line-construct
                 (if (listp global-mode-string) global-mode-string
@@ -96,10 +113,8 @@
   (when ardentia-mode-line-mode
     (setq global-mode-string
           (append (or global-mode-string (list ""))
-                  (list ardentia--mode-line-construct)))
-    (setq ardentia--mode-line-timer
-          (run-at-time 0 ardentia-mode-line-interval
-                       #'ardentia--mode-line-tick))))
+                  (list ardentia--mode-line-construct))))
+  (ardentia--mode-line-timer-restart 0))
 
 (provide 'ardentia-modeline)
 ;;; ardentia-modeline.el ends here
