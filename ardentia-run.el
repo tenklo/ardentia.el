@@ -29,6 +29,11 @@
 ;; waiting for the timer.  The command line is `ardentia-run-task-command'.
 ;; `ardentia-run-task-at-point' works in an org buffer,
 ;; `ardentia-dashboard-run' (in ardentia-dashboard.el) on a dashboard row.
+;;
+;; `ardentia-stop-task' does the opposite for a running task: it runs
+;; `ardentia-stop-task-command' asynchronously, which signals the agent
+;; process on this computer; the runner then closes the task.  Bound to
+;; `k' on a dashboard row and in a session transcript.
 
 ;;; Code:
 
@@ -58,6 +63,28 @@ and return; the runner does the work.  The default uses a transient
 systemd user unit, so the run is independent of Emacs and its output
 goes to the journal.  A bare `--setenv=PATH' copies PATH from Emacs's
 environment.  Nil switches the feature off."
+  :type '(choice (const :tag "Off" nil) (repeat string))
+  :group 'ardentia)
+
+(defcustom ardentia-stop-task-command
+  (list (expand-file-name "ai/tools/aiready-stop" ardentia-org-directory)
+        "%i")
+  "Command that stops the run of one task on this computer.
+A list of strings: the program and its arguments, started without a
+shell.  In every element \"%i\" is replaced by the org ID of the task
+and \"%f\" by the absolute name of its file.
+
+The contract: the command signals the agent process working on that
+task; the runner then closes the task (blocked, back to review).  It
+prints one line of text and exits with
+  0  stopped, and the task is closed,
+  3  the task is not running on this computer,
+  4  the signal was sent, but the runner has not finished closing the
+     task yet,
+  1  usage error,
+  2  any other failure.
+Only the computer that claimed the task can stop it.  Nil switches the
+feature off."
   :type '(choice (const :tag "Off" nil) (repeat string))
   :group 'ardentia)
 
@@ -183,6 +210,53 @@ after asking.  A missing ID is created."
       (unless (y-or-n-p (format "Run \"%s\" now? " title))
         (user-error "Cancelled"))
       (ardentia-run--start-here title))))
+
+;;;###autoload
+(defun ardentia-stop-task (task)
+  "Stop the run of the running TASK (a task plist) after asking.
+Run `ardentia-stop-task-command' asynchronously and return the process,
+or nil when declined.  Only the computer that claimed the task can stop
+it."
+  (unless ardentia-stop-task-command
+    (user-error "Set `ardentia-stop-task-command' to enable stopping a task"))
+  (unless (eq (plist-get task :queue) 'running)
+    (user-error "Task is not running"))
+  (let ((claimed (ardentia--task-prop task "AI_CLAIMED_BY"))
+        (local (ardentia-run--local-host))
+        (id (ardentia--val (plist-get task :id)))
+        (title (plist-get task :title)))
+    (when (and claimed local (not (equal claimed local)))
+      (user-error "Claimed by %s; stop it on that computer" claimed))
+    (unless id (user-error "Task has no ID"))
+    (when (y-or-n-p (format "Stop the run of \"%s\"? " title))
+      (let* ((file (plist-get task :file))
+             (command (ardentia-run--substitute
+                       ardentia-stop-task-command id
+                       (if file (expand-file-name file) "")))
+             (buf (get-buffer-create ardentia-run--buffer-name)))
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (insert (format "\n$ %s\n" (mapconcat #'identity command " "))))
+        (make-process
+         :name "ardentia-stop"
+         :buffer buf
+         :command command
+         :noquery t
+         :connection-type 'pipe
+         :sentinel
+         (lambda (proc _event)
+           (when (memq (process-status proc) '(exit signal))
+             (let ((code (process-exit-status proc)))
+               (pcase code
+                 (0 (message "ardentia: stopped \"%s\"" title)
+                    (ardentia-run--refresh))
+                 (3 (message "ardentia: \"%s\" is not running on this computer"
+                             title))
+                 (4 (message "ardentia: stop signal sent for \"%s\", the runner is still closing it"
+                             title)
+                    (ardentia-run--refresh))
+                 (_ (message "ardentia: stopping \"%s\" failed (exit %s), see buffer %s"
+                             title code ardentia-run--buffer-name)))))))))))
 
 (provide 'ardentia-run)
 ;;; ardentia-run.el ends here

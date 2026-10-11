@@ -998,6 +998,109 @@ Text
           (should (buffer-modified-p))
           (should (seq-some (lambda (p) (string-match-p "Save" p)) asked)))))))
 
+
+;;;; Stop a running task
+
+(defconst ardentia-test--running-task
+  (list :queue 'running :title "Busy" :file "/o/a.org" :id "id-k"
+        :tags '("ai_in_progress")
+        :props '(("AI_CLAIMED_BY" . "here"))))
+
+(defun ardentia-test--stop-and-wait (command task)
+  "Stop the running TASK with COMMAND; return the messages as a string."
+  (let ((ardentia-stop-task-command command) (refreshed 0) msgs proc)
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+              ((symbol-function 'ardentia-run--refresh)
+               (lambda () (setq refreshed (1+ refreshed))))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args)
+                 (when fmt (push (apply #'format fmt args) msgs)))))
+      (setq proc (ardentia-stop-task task))
+      (ardentia-test--wait (lambda () (and (not (process-live-p proc)) msgs))))
+    (cons refreshed (mapconcat #'identity (reverse msgs) "\n"))))
+
+(ert-deftest ardentia-test-stop-refuses-not-running ()
+  (cl-letf (((symbol-function 'y-or-n-p)
+             (lambda (&rest _) (ert-fail "must not ask"))))
+    (let ((ardentia-stop-task-command '("true")) (ardentia--local-host nil))
+      (should-error (ardentia-stop-task
+                     (plist-put (copy-sequence ardentia-test--running-task)
+                                :queue 'review))
+                    :type 'user-error))))
+
+(ert-deftest ardentia-test-stop-refuses-other-host ()
+  (cl-letf (((symbol-function 'y-or-n-p)
+             (lambda (&rest _) (ert-fail "must not ask"))))
+    (let ((ardentia-stop-task-command '("true")) (ardentia--local-host "there"))
+      (let ((err (should-error (ardentia-stop-task ardentia-test--running-task)
+                               :type 'user-error)))
+        (should (string-match-p "Claimed by here" (cadr err)))))))
+
+(ert-deftest ardentia-test-stop-unknown-local-host-allowed ()
+  (let ((ardentia--local-host nil) (ardentia--state nil))
+    (should (string-match-p
+             "stopped \"Busy\""
+             (cdr (ardentia-test--stop-and-wait
+                   '("true") ardentia-test--running-task))))))
+
+(ert-deftest ardentia-test-stop-command-nil-and-no-id ()
+  (let ((ardentia-stop-task-command nil))
+    (should-error (ardentia-stop-task ardentia-test--running-task)
+                  :type 'user-error))
+  (let ((ardentia-stop-task-command '("true")) (ardentia--local-host nil))
+    (should-error (ardentia-stop-task
+                   (plist-put (copy-sequence ardentia-test--running-task)
+                              :id nil))
+                  :type 'user-error)))
+
+(ert-deftest ardentia-test-stop-declined ()
+  (let ((ardentia-stop-task-command '("true")) (ardentia--local-host nil))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
+      (should-not (ardentia-stop-task ardentia-test--running-task)))))
+
+(ert-deftest ardentia-test-stop-default-command ()
+  (should (equal (car (last ardentia-stop-task-command)) "%i"))
+  (should (string-suffix-p "ai/tools/aiready-stop"
+                           (car ardentia-stop-task-command))))
+
+(ert-deftest ardentia-test-stop-passes-id ()
+  (let* ((out (make-temp-file "ardentia-stop-out"))
+         (ardentia--local-host nil))
+    (unwind-protect
+        (progn
+          (ardentia-test--stop-and-wait
+           (list "sh" "-c" "printf '%s' \"$1\" > \"$2\"" "sh" "%i" out)
+           ardentia-test--running-task)
+          (should (equal (with-temp-buffer (insert-file-contents out)
+                                           (buffer-string))
+                         "id-k")))
+      (delete-file out))))
+
+(ert-deftest ardentia-test-stop-sentinel-messages ()
+  (let ((ardentia--local-host nil))
+    (pcase-dolist (`(,code ,regexp ,refreshes)
+                   '((0 "stopped \"Busy\"" 1)
+                     (3 "not running on this computer" 0)
+                     (4 "signal sent.*still closing" 1)
+                     (2 "failed (exit 2), see buffer" 0)))
+      (let ((res (ardentia-test--stop-and-wait
+                  (list "sh" "-c" (format "exit %d" code))
+                  ardentia-test--running-task)))
+        (should (string-match-p regexp (cdr res)))
+        (should (= (car res) refreshes))))))
+
+(ert-deftest ardentia-test-stop-keys ()
+  (should (eq (keymap-lookup ardentia-dashboard-mode-map "k")
+              #'ardentia-dashboard-stop))
+  (should (eq (keymap-lookup ardentia-session-mode-map "k")
+              #'ardentia-session-stop)))
+
+(ert-deftest ardentia-test-stop-session-refuses-not-running ()
+  (with-temp-buffer
+    (let ((ardentia--state nil)
+          (ardentia-session--task (list :queue 'review :title "T")))
+      (should-error (ardentia-session-stop) :type 'user-error))))
+
 ;;;; Async fetch with a fake org-tool
 
 (defun ardentia-test--fake-env (dir &optional no-multi-tag)

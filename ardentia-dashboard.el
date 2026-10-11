@@ -266,6 +266,7 @@ With HIDE-LATER, ready tasks that are not yet due are left out."
   "s" #'ardentia-dashboard-send-back
   "l" #'ardentia-dashboard-toggle-later
   "x" #'ardentia-dashboard-run
+  "k" #'ardentia-dashboard-stop
   "," #'ardentia-dashboard-priority
   "+" #'ardentia-dashboard-priority-up
   "S-<up>" #'ardentia-dashboard-priority-up
@@ -502,6 +503,11 @@ in agent-shell."
   "Run the ready (or later) task at point now."
   (interactive)
   (ardentia-run-task (ardentia-dashboard--require-task)))
+
+(defun ardentia-dashboard-stop ()
+  "Stop the running task at point."
+  (interactive)
+  (ardentia-stop-task (ardentia-dashboard--require-task)))
 
 (provide 'ardentia-dashboard)
 ;;; ardentia-dashboard.el ends here

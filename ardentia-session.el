@@ -47,6 +47,7 @@
 (require 'ardentia-actions)
 
 (declare-function ardentia "ardentia" ())
+(declare-function ardentia-stop-task "ardentia-run" (task))
 (declare-function agent-shell-resume-session "agent-shell" (session-id))
 (defvar agent-shell-session-restore-verbosity)
 
@@ -431,12 +432,22 @@ Signal a `user-error' and leave point alone if there is no such entry."
   "o" #'ardentia-session-visit
   "i" #'ardentia-session-compose
   "a" #'ardentia-session-agent-shell-here
+  "k" #'ardentia-session-stop
   "n" #'ardentia-session-next-entry
   "p" #'ardentia-session-previous-entry
   "C-c C-n" #'ardentia-session-next-entry
   "C-c C-p" #'ardentia-session-previous-entry
   "q" #'quit-window
   "?" #'ardentia)
+
+(defun ardentia-session-stop ()
+  "Stop the run of the task shown in this transcript."
+  (interactive)
+  (unless ardentia-session--task (user-error "No task here"))
+  (unless (ardentia-session--task-running-p ardentia-session--task)
+    (user-error "Task is not running"))
+  (ardentia-stop-task (plist-put (copy-sequence ardentia-session--task)
+                                 :queue 'running)))
 
 (define-derived-mode ardentia-session-mode special-mode "Ardentia-Session"
   "Read-only view of the agent session transcript of one task.

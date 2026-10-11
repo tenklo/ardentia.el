@@ -60,6 +60,20 @@ tag `NAME_only`.
   Running asks for confirmation, refuses tasks bound to another host,
   and in an org buffer saves the file first, because the runner reads
   it from disk.
+- `ardentia-stop-task-command`: stops the run of one running task
+  (`k`). In every element `%i` is the task's org ID and `%f` its file.
+  The default is `ai/tools/aiready-stop ID` below
+  `ardentia-org-directory`. The contract: the command signals the
+  agent process working on that task on this computer, the runner then
+  closes the task (blocked, back to review), and the command prints one
+  line of text. Exit codes: 0 stopped and the task is closed, 3 the task
+  is not running on this computer, 4 the signal was sent but the runner
+  has not finished closing the task yet, 1 usage error, 2 any other
+  failure. Only the computer that claimed the task
+  (`AI_CLAIMED_BY`) can stop it. Nil switches the feature off.
+  Stopping asks for confirmation, refuses tasks that are not running
+  and tasks claimed by another host, and never blocks Emacs; the
+  dashboards refresh after exit 0 and 4.
 
 Properties ardentia shows when present: `AI_STATUS` (completed, blocked,
 partial), `AI_SESSION` (`YYYYMMDD-HHMM`, when the work finished),
@@ -103,6 +117,9 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-mode-line-mode`| Global minor mode with the review counter            |
 | `ardentia-run-task-at-point` | Org buffer: start the runner now on the `:aiready:` task at point |
 | `ardentia-dashboard-run` | Dashboard: start the runner now on the ready or later task at point |
+| `ardentia-stop-task` | Stop the run of a running task (asks first; the claiming computer only) |
+| `ardentia-dashboard-stop` | Dashboard: stop the running task at point |
+| `ardentia-session-stop` | Session transcript: stop the task of this transcript |
 | `ardentia-dashboard-priority` | Dashboard: set the priority of the ready or later task at point (SPC removes it) |
 | `ardentia-dashboard-priority-up` / `-down` | Dashboard: raise or lower that priority |
 
@@ -120,7 +137,7 @@ raise/lower it (ready and later tasks only),
 found by its line or, failing that, by its unique title; `x` creates the
 ID and saves the file first),
 `a` accept, `s` send back, `l` hide or show later tasks, `x` run the ready
-or later task now, `c` completed tasks overview, `u` fetch the usage now, `q` quit, `?` menu.
+or later task now, `k` stop the running task at point, `c` completed tasks overview, `u` fetch the usage now, `q` quit, `?` menu.
 The Cost column shows `AI_COST_USD_TOTAL` for every task that has it.
 
 Queue `later`: the runner only picks up an `:aiready:` task once its
@@ -253,7 +270,8 @@ buffer is no longer polled, `g` reads it again. The timer exists only while a
 buffer needs it.
 
 Keys: `g` re-read from scratch, `f` toggle following, `o` visit the
-heading, `i` send a message into the running session, `a` open in
+heading, `i` send a message into the running session, `k` stop the running
+task, `a` open in
 `agent-shell`, `C-c C-n`/`C-c C-p` (also `n`/`p`) next/previous entry,
 `q` quit.
 
@@ -291,7 +309,7 @@ automatic refresh off; only dashboards shown on a visible frame are refreshed,
 never while the minibuffer is active or a refresh runs; re-open the dashboard
 to restart the timer),
 `ardentia-timer-unit`, `ardentia-service-unit`,
-`ardentia-run-task-command`,
+`ardentia-run-task-command`, `ardentia-stop-task-command`,
 `ardentia-session-directory`, `ardentia-session-viewer`,
 `ardentia-session-say-command`,
 `ardentia-session-agent-shell-verbosity`,
