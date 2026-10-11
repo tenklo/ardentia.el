@@ -336,8 +336,13 @@ being the number of lines the window start lies above the window point."
   (cons (ardentia-dashboard--mark-at (point))
         (mapcar (lambda (win)
                   (let ((pt (window-point win)))
+                    ;; Count to the start of the line: `count-lines' adds one
+                    ;; when PT is past it, which would scroll up every render.
                     (list win (ardentia-dashboard--mark-at pt)
-                          (count-lines (window-start win) pt))))
+                          (count-lines (window-start win)
+                                       (save-excursion
+                                         (goto-char pt)
+                                         (line-beginning-position))))))
                 (get-buffer-window-list (current-buffer) nil t))))
 
 (defun ardentia-dashboard--goto-mark (mark)

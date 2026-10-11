@@ -657,6 +657,31 @@ Original task text
                                   :id)
                        "Ccc"))))))
 
+;; A window keeps its scroll offset over several renders also when its point
+;; is not at the start of a line (`count-lines' counts that partial line).
+(ert-deftest ardentia-test-dashboard-render-keeps-window-start ()
+  (ardentia-test--with-dash (mapcar (lambda (n)
+                                      (ardentia-test--dash-task
+                                       (format "T%02d" n) n))
+                                    (number-sequence 1 60))
+    (save-window-excursion
+      (let ((win (selected-window)) (other nil))
+        (setq other (condition-case nil (split-window win) (error nil)))
+        (skip-unless other)
+        (set-window-buffer win (get-buffer-create " *ardentia-test-other*"))
+        (set-window-buffer other buf)
+        (goto-char (point-min))
+        (forward-line 29)
+        (move-to-column 12)
+        (should (> (current-column) 0))
+        (set-window-point other (point))
+        (set-window-start other (save-excursion (forward-line -5) (point)))
+        (let ((start (line-number-at-pos (window-start other)))
+              (row (line-number-at-pos (window-point other))))
+          (dotimes (_ 3) (ardentia-dashboard--render))
+          (should (= row (line-number-at-pos (window-point other))))
+          (should (= start (line-number-at-pos (window-start other)))))))))
+
 (ert-deftest ardentia-test-send-back-adapted-indentation ()
   (ardentia-test--with-org-file f "* TODO Bare :humanreview:
 :PROPERTIES:
