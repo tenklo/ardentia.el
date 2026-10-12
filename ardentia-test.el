@@ -951,6 +951,102 @@ Text
             (should truncate-lines))
         (kill-buffer buf)))))
 
+;;;; Adding a note from the review buffer
+
+(defmacro ardentia-test--with-review-note (rev f &rest body)
+  "Run BODY with REV bound to a review buffer of the fixture file F.
+Leave no note state behind."
+  (declare (indent 2))
+  `(ardentia-test--with-org-file ,f ardentia-test--org
+     (let (,rev (ardentia-review--pending-note nil))
+       (cl-letf (((symbol-function 'pop-to-buffer)
+                  (lambda (b &rest _) (setq ,rev b))))
+         (ardentia-review-task (list :file ,f :id "id-one" :title "Task one")))
+       (unwind-protect (progn ,@body)
+         (remove-hook 'post-command-hook 'org-add-log-note)
+         (when (get-buffer "*Org Note*")
+           (let ((kill-buffer-hook nil)) (kill-buffer "*Org Note*")))
+         (cancel-function-timers #'ardentia-review--clear-pending-note)
+         (kill-buffer ,rev)))))
+
+(defun ardentia-test--start-note (rev text)
+  "Run `ardentia-review-add-note' in REV, as the command loop would.
+Type TEXT into the note buffer."
+  (with-current-buffer rev
+    (let ((this-command 'ardentia-review-add-note))
+      (call-interactively #'ardentia-review-add-note)
+      (cl-letf (((symbol-function 'pop-to-buffer-same-window) #'ignore))
+        (org-add-log-note))))
+  (with-current-buffer "*Org Note*" (goto-char (point-max)) (insert text)))
+
+(defun ardentia-test--cancel-note ()
+  "Cancel the note in `*Org Note*' like `C-c C-k' does."
+  (with-current-buffer "*Org Note*"
+    (let ((org-note-abort t)) (funcall org-finish-function))))
+
+(ert-deftest ardentia-test-review-add-note-stores-and-saves ()
+  (ardentia-test--with-review-note rev f
+    (ardentia-test--start-note rev "first line\nsecond line")
+    (should ardentia-review--pending-note)
+    (with-current-buffer "*Org Note*" (org-ctrl-c-ctrl-c))
+    (should-not ardentia-review--pending-note)
+    (should-not (memq 'org-add-log-note post-command-hook))
+    (should (string-match-p
+             "^:LOGBOOK:\n- Note taken on \\[STAMP\\] \\\\\\\\\n  first line\n  second line\n- AI-Lauf"
+             (ardentia-test--file-text f)))
+    (should-not (buffer-modified-p (find-buffer-visiting f)))
+    (with-current-buffer rev
+      (should (string-match-p
+               "\*\* Your notes after the report\n- Note taken on[^\n]*\n +first line"
+               (buffer-string))))))
+
+(ert-deftest ardentia-test-review-add-note-cancel ()
+  (ardentia-test--with-review-note rev f
+    (let ((before (ardentia-test--file-text f)))
+      (ardentia-test--start-note rev "never stored")
+      (ardentia-test--cancel-note)
+      (should-not (get-buffer "*Org Note*"))
+      (ardentia-test--wait (lambda () (null ardentia-review--pending-note)))
+      (should-not ardentia-review--pending-note)
+      (should (equal (ardentia-test--file-text f) before))
+      ;; A later, unrelated org note must not save the task buffer.
+      (with-current-buffer (find-buffer-visiting f)
+        (let ((this-command 'org-add-note))
+          (goto-char (point-min))
+          (re-search-forward "^\\* TODO Other")
+          (beginning-of-line)
+          (org-add-log-setup 'note)
+          (cl-letf (((symbol-function 'pop-to-buffer-same-window) #'ignore))
+            (org-add-log-note)))
+        (with-current-buffer "*Org Note*" (insert "other") (org-ctrl-c-ctrl-c))
+        (set-buffer-modified-p t)
+        (should (equal (ardentia-test--file-text f) before))
+        (set-buffer-modified-p nil)))))
+
+(ert-deftest ardentia-test-review-add-note-modified-buffer ()
+  (ardentia-test--with-review-note rev f
+    (let ((before (ardentia-test--file-text f)) (buf (find-buffer-visiting f)))
+      (with-current-buffer buf
+        (goto-char (point-max)) (insert "* TODO Extra\n"))
+      (ardentia-test--start-note rev "kept in memory")
+      (with-current-buffer "*Org Note*" (org-ctrl-c-ctrl-c))
+      (should-not ardentia-review--pending-note)
+      (should (buffer-modified-p buf))
+      (should (equal (ardentia-test--file-text f) before))
+      (with-current-buffer buf
+        (should (string-match-p "Note taken on [^\n]*\n +kept in memory"
+                                (buffer-string)))))))
+
+(ert-deftest ardentia-test-review-add-note-refuses-outside-review ()
+  (with-temp-buffer
+    (should-error (ardentia-review-add-note) :type 'user-error)))
+
+(ert-deftest ardentia-test-review-add-note-keys ()
+  (should (eq (keymap-lookup ardentia-review-mode-map "C-c C-z")
+              'ardentia-review-add-note))
+  (should (eq (keymap-lookup ardentia-review-mode-map "z")
+              'ardentia-review-add-note)))
+
 ;;;; Mutations
 
 (ert-deftest ardentia-test-accept ()
@@ -4102,7 +4198,7 @@ Bindings inherited from a parent keymap are not included."
           (setq n (1+ n))
           (should (memq (cdr a) cmds))
           (should (eq (keymap-lookup (symbol-value map-sym) (car a)) (cdr a))))))
-    (should (= n 6))))
+    (should (= n 7))))
 
 ;;;; The "For you" line of the run report
 

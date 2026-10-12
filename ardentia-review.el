@@ -31,6 +31,12 @@
 ;; headings (result sections and open TODOs "for you") and the original
 ;; task text.  Everything is read
 ;; from the visiting buffer, not from disk.
+;;
+;; `z' or `C-c C-z' (`ardentia-review-add-note') opens org's note window
+;; for the reviewed task.  `C-c C-c' stores the note in the LOGBOOK of
+;; the real heading, saves the file when it was unmodified, and renders
+;; the buffer again, so the note shows under "Your notes after the
+;; report".  `C-c C-k' cancels.
 
 ;;; Code:
 
@@ -43,6 +49,7 @@
 (require 'ardentia-session)
 
 (declare-function ardentia-dashboard-refresh-all "ardentia-dashboard" ())
+(declare-function ardentia-dashboard--live-buffers "ardentia-dashboard" ())
 
 ;;;; Pure parts: LOGBOOK extraction
 
@@ -319,10 +326,13 @@ Toggle in a buffer with \\[toggle-truncate-lines]."
     ("y" "Let agents do child TODO" ardentia-review-yourself))
    ("Task"
     ("o" "Visit heading" ardentia-review-visit)
-    ("t" "Transcript" ardentia-review-transcript))
+    ("t" "Transcript" ardentia-review-transcript)
+    ("z" "Add note to task" ardentia-review-add-note))
    ("View"
     ("g" "Re-render" ardentia-review-render)
-    ("q" "Quit" quit-window))))
+    ("q" "Quit" quit-window)))
+  :alternates
+  (("C-c C-z" . ardentia-review-add-note)))
 
 (define-derived-mode ardentia-review-mode org-mode "Ardentia-Review"
   "Read-only org view of one task waiting for review.
@@ -407,6 +417,79 @@ Pick among the open children tagged humanreview; replace the tag by aiready."
                            (plist-get ardentia-review--task :id)
                            title note)
       (ardentia-review-render))))
+
+;;;; Adding a note to the task
+
+(defvar ardentia-review--pending-note nil
+  "Plist of the note being taken for a review buffer's task, or nil.
+Keys: :buffer (the task's org buffer), :id, :was-modified (whether that
+buffer had unsaved changes before) and :review-buffer.")
+
+(defun ardentia-review--clear-pending-note ()
+  "Forget the pending note."
+  (setq ardentia-review--pending-note nil))
+
+(defun ardentia-review--note-stored ()
+  "Finish the note of `ardentia-review--pending-note' once org stored it.
+Runs on `org-after-note-stored-hook' with point at the new note.  Save the
+task buffer when it was unmodified before, render the review buffer again
+and refresh the dashboards.  Do nothing for any other note."
+  (let ((pending ardentia-review--pending-note))
+    (when (and pending (eq (plist-get pending :buffer) (current-buffer)))
+      (condition-case err
+          (when (equal (save-excursion
+                         (org-back-to-heading t)
+                         (org-entry-get nil "ID"))
+                       (plist-get pending :id))
+            (ardentia-review--clear-pending-note)
+            (if (plist-get pending :was-modified)
+                (message "ardentia: %s has unsaved changes; the timer only sees saved state"
+                         (file-name-nondirectory (or buffer-file-name (buffer-name))))
+              (save-buffer))
+            (let ((review (plist-get pending :review-buffer)))
+              (when (buffer-live-p review)
+                (with-current-buffer review (ardentia-review-render))))
+            (when (and (fboundp 'ardentia-dashboard--live-buffers)
+                       (ardentia-dashboard--live-buffers))
+              (ardentia-dashboard-refresh-all)))
+        (error (message "ardentia: finishing the note failed: %s"
+                        (error-message-string err)))))))
+
+(defun ardentia-review--watch-note-buffer ()
+  "Clear the pending note when the `*Org Note*' buffer goes away.
+Runs on `org-log-buffer-setup-hook'.  Org kills the buffer before it
+stores the note and runs `org-after-note-stored-hook', so the clearing is
+deferred to a timer; a cancelled note then leaves no record behind."
+  (when ardentia-review--pending-note
+    (add-hook 'kill-buffer-hook
+              (lambda ()
+                (run-at-time 0 nil #'ardentia-review--clear-pending-note))
+              nil t)))
+
+(add-hook 'org-after-note-stored-hook #'ardentia-review--note-stored)
+(add-hook 'org-log-buffer-setup-hook #'ardentia-review--watch-note-buffer)
+
+(defun ardentia-review-add-note ()
+  "Add a note to the LOGBOOK of the task of this review buffer.
+Open org's note window for the real heading: `C-c C-c' stores the note,
+`C-c C-k' cancels.  The org file is saved afterwards when it was
+unmodified before."
+  (interactive)
+  (unless (and ardentia-review--task (derived-mode-p 'ardentia-review-mode))
+    (user-error "Not an ardentia review buffer"))
+  (let* ((id (plist-get ardentia-review--task :id))
+         (buf (ardentia--task-buffer (plist-get ardentia-review--task :file)))
+         (pending (list :buffer buf :id id
+                        :was-modified (buffer-modified-p buf)
+                        :review-buffer (current-buffer))))
+    (with-current-buffer buf
+      (save-restriction
+        (widen)
+        (save-excursion
+          (unless (ardentia--goto-id id)
+            (user-error "%s" ardentia--changed-message))
+          (org-add-log-setup 'note))))
+    (setq ardentia-review--pending-note pending)))
 
 (provide 'ardentia-review)
 ;;; ardentia-review.el ends here

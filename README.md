@@ -320,8 +320,12 @@ file read-only, `g` refresh, `q` quit, `?` menu of all keys of this buffer
 
 `a` accept, `s` send back (asks for a note), `y` let the agents do an open
 child TODO themselves, `o` visit the heading, `t` session transcript,
-`g` re-render, `q` quit, `?` menu of all keys of this buffer
+`g` re-render, `q` quit, `z` or `C-c C-z` add a note to the task, `?` menu of all keys of this buffer
 (`ardentia-review-menu`; `.` opens the global menu, as it does directly in the buffer).
+`z` opens org's note window (`*Org Note*`) for the reviewed task: `C-c C-c`
+stores the note in the LOGBOOK of the real heading, saves the file when it
+was unmodified before and re-renders the buffer, where the note shows under
+"Your notes after the report"; `C-c C-k` cancels.
 The headline carries the TODO keyword and priority, and the
 `- Status ::` line shows the keyword and the agents' `AI_STATUS`.
 When the usage properties exist, the section "Agent properties" starts
