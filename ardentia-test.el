@@ -3871,8 +3871,9 @@ fetching and the hosts file are replaced by fixtures, the timer is boxed."
         (append (list :time (current-time))
                 (ardentia-usage--parse ardentia-test--usage-json)))
   (list :host "desktop" :time (current-time)
-        :timer '(:last "Sun 2026-10-11 08:45:17 CEST"
-                 :next "Sun 2026-10-11 09:00:12 CEST")))
+        ;; Stamps of today, so the compact form drops the date on any day.
+        :timer (list :last (format-time-string "%a %F 08:45:17 CEST")
+                     :next (format-time-string "%a %F 09:00:12 CEST"))))
 
 (defun ardentia-test--squash (string)
   "Return STRING without whitespace and bars, for content comparison."
