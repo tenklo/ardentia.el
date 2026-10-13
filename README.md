@@ -136,8 +136,12 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-stop-task` | Stop the run of a running task (asks first; the claiming computer only) |
 | `ardentia-dashboard-stop` | Dashboard: stop the running task at point |
 | `ardentia-session-stop` | Session transcript: stop the task of this transcript |
-| `ardentia-dashboard-priority` | Dashboard: set the priority of the ready or later task at point (SPC removes it) |
+| `ardentia-dashboard-priority` | Dashboard: set the priority of the task at point (SPC removes it) |
 | `ardentia-dashboard-priority-up` / `-down` | Dashboard: raise or lower that priority |
+| `ardentia-dashboard-mark`, `-unmark`, `-unmark-all`, `-mark-toggle`, `-mark-all`, `-mark-toggle-all`, `-mark-regexp` | Dashboard: marks, like org-agenda's bulk marks |
+| `ardentia-dashboard-set-tags`, `-schedule`, `-deadline`, `-todo` | Dashboard: org-agenda's tag, schedule, deadline and TODO state commands on the task at point |
+| `ardentia-dashboard-bulk-action` | Dashboard: apply tag, schedule, deadline, TODO state or priority to all marked tasks |
+| `ardentia-review-set-tags`, `-schedule`, `-deadline`, `-todo`, `-priority`, `-priority-up`, `-priority-down` | Review buffer: the same edits on the reviewed task |
 | `ardentia-dashboard-menu`, `ardentia-review-menu`, `ardentia-knowledge-menu`, `ardentia-agents-menu`, `ardentia-session-menu` | `?` in the respective buffer: transient menu listing every key of that buffer (the task list: groups View and Filter among them), grouped, under the same key; `.` opens `ardentia` (also directly in every buffer) |
 
 ### Keys in the task list
@@ -174,16 +178,38 @@ session transcript for a running task, an error for other queues),
 `A` join the running session (see Session transcripts) or, for other tasks,
 resume the latest session in `agent-shell`, `o` visit the heading,
 `,` set the priority (SPC removes it), `+`/`-` (also `S-<up>`/`S-<down>`)
-raise/lower it (ready and later tasks only),
+raise/lower it (every task row),
 (also on freshly captured tasks that have no `:ID:` yet: the heading is
 found by its line or, failing that, by its unique title; `x` creates the
 ID and saves the file first),
 `a` accept, `s` send back (both refuse a task that is already accepted),
 `d` toggle the due flag between time left and due date, `x` run the ready
-or later task now, `k` stop the running task at point, `u` fetch the usage now,
+or later task now, `k` stop the running task at point, `$` fetch the usage now,
 `S` sort by column, `q` quit, `?` menu of all keys of this buffer
 (`ardentia-dashboard-menu`, grouped, same keys; `.` opens the global menu, as it does directly in the buffer).
 A refresh keeps point and scroll position on the same task.
+
+Marks and edits work like in org-agenda:
+- `m` marks the task and moves down, `u` unmarks and moves down, `U`
+  unmarks all, `M-m` toggles the row, `*` marks all rows shown, `M-*`
+  toggles all rows, `%` marks the tasks whose title matches a regexp
+  - marked rows show `>`, the header line shows `N marked`
+  - marks are kept across `g`, the automatic refresh and view switches; a
+    task that is not listed any more loses its mark; a running merge cannot
+    be marked
+- `:` or `C-c C-q` set the tags, `C-c C-s` schedules, `C-c C-d` sets the
+  deadline (`C-u` removes either), `C-c C-t` changes the TODO state, all on
+  the task at point (the marks are not used), on the real heading
+  - a log note that org asks for is stored and the file saved afterwards
+  - the heading must still carry the lifecycle tag the row was listed under
+- `B` applies an action to the marked tasks: `+` add a tag, `-` remove a
+  tag, `s` schedule, `d` deadline, `t` TODO state, `,` priority
+  - what the action needs is asked for once; `C-u B` with `s` or `d` removes
+  - every file is saved once, the lists are refreshed once
+  - a task that cannot be changed is skipped; the message reads
+    `Bulk: N done, M skipped` plus the first reason
+  - no log entries are written in a bulk action
+  - the marks are cleared afterwards unless `org-agenda-persistent-marks` is non-nil
 The Cost column shows `AI_COST_USD_TOTAL` for every task that has it.
 For a review task, the Flags column ends with the class of the `For you`
 line of its newest run report: `you!` when the line contains `REQUIRED`,
@@ -320,7 +346,11 @@ file read-only, `g` refresh, `q` quit, `?` menu of all keys of this buffer
 
 `a` accept, `s` send back (asks for a note), `y` let the agents do an open
 child TODO themselves, `o` visit the heading, `t` session transcript,
-`g` re-render, `q` quit, `z` or `C-c C-z` add a note to the task, `?` menu of all keys of this buffer
+`g` re-render, `q` quit, `z` or `C-c C-z` add a note to the task,
+`:` or `C-c C-q` set the tags, `C-c C-s` schedule, `C-c C-d` deadline
+(`C-u` removes either), `C-c C-t` TODO state, `,` priority, `+`/`-` (also
+`S-<up>`/`S-<down>`) raise/lower it, all on the real heading of the
+reviewed task, followed by a re-render, `?` menu of all keys of this buffer
 (`ardentia-review-menu`; `.` opens the global menu, as it does directly in the buffer).
 `z` opens org's note window (`*Org Note*`) for the reviewed task: `C-c C-c`
 stores the note in the LOGBOOK of the real heading, saves the file when it
