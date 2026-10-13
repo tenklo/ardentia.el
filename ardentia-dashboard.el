@@ -1349,6 +1349,15 @@ They are the tags of the files involved, of the tasks, and the ones of
         (when (stringp (car-safe entry)) (push (car entry) tags))))
     (sort (delete-dups (copy-sequence tags)) #'string<)))
 
+(defun ardentia-dashboard--list-tags (tasks)
+  "Return the sorted, de-duplicated tags carried by TASKS.
+Pure: no buffer is visited."
+  (let (tags)
+    (dolist (task tasks)
+      (dolist (tag (plist-get task :tags))
+        (when (stringp tag) (push tag tags))))
+    (sort (delete-dups tags) #'string<)))
+
 (defun ardentia-dashboard--read-tag (prompt tasks)
   "Read a tag with PROMPT, completing over the tags for TASKS."
   (let ((tag (string-trim
@@ -1519,7 +1528,7 @@ only exclude."
   (interactive
    (list (completing-read-multiple
           "Tags (tag, -tag; empty clears): "
-          (let ((tags (ardentia-dashboard--tag-candidates
+          (let ((tags (ardentia-dashboard--list-tags
                        (append (plist-get ardentia--state :tasks)
                                ardentia-dashboard--completed-tasks))))
             (append tags (mapcar (lambda (tag) (concat "-" tag)) tags)))

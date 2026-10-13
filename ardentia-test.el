@@ -3337,6 +3337,12 @@ fetching and the hosts file are replaced by fixtures, the timer is boxed."
     (should (null ardentia-dashboard--filter-title))
     (should (= (length (ardentia-test--shown)) 4))))
 
+(ert-deftest ardentia-test-list-tags-helper ()
+  (should (null (ardentia-dashboard--list-tags nil)))
+  (should (equal (ardentia-dashboard--list-tags
+                  '((:tags ("b" "a")) (:title "no tags") (:tags ("c" "a"))))
+                 '("a" "b" "c"))))
+
 (ert-deftest ardentia-test-list-tag-filter ()
   (ardentia-test--with-list
     ;; direct matching: exact, case-sensitive, AND
