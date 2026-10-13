@@ -43,6 +43,11 @@
 ;; view switches and apply where they make sense; `f' shows them all.
 ;; Refreshing is asynchronous.
 ;;
+;; Tasks are marked, tagged, scheduled and changed with the keys of
+;; org-agenda: `m' marks, `:' sets tags, `C-c C-s' schedules, `B' applies
+;; a bulk action to the marked tasks.  Marks are kept as task keys, so
+;; they survive every re-render.
+;;
 ;; The header line starts with the view indicator, then lists the active
 ;; filters, then host, timer, refresh time and usage (completed view: the
 ;; totals and the refresh time of its own fetch).  In a narrow window the
@@ -88,6 +93,10 @@ Nil (a buffer of older code) makes the next render install the format.")
 
 (defvar-local ardentia-dashboard--view-points nil
   "Alist of view and the row key that had point when the view was left.")
+
+(defvar-local ardentia-dashboard--marked nil
+  "Keys (`ardentia--task-key') of the marked tasks of this buffer.
+Keys, not rows: the buffer is printed anew on every refresh.")
 
 (defvar-local ardentia-dashboard--filter-host nil
   "Host filter of this buffer: a host name, or nil for all hosts.")
@@ -236,6 +245,11 @@ Nil shows plain text.  Takes effect on the next refresh."
 (defface ardentia-view-active
   '((t :inherit font-lock-function-name-face :weight normal))
   "The active view in the view indicator of the header line."
+  :group 'ardentia-faces)
+
+(defface ardentia-mark
+  '((t :inherit warning :weight bold))
+  "The mark of a marked task, and the count in the header line."
   :group 'ardentia-faces)
 
 (defvar org-priority-highest)
@@ -390,6 +404,10 @@ defaults to `ardentia--state'."
     (append
      (list (ardentia-dashboard--view-segment))
      (ardentia-dashboard--filter-segments)
+     (and ardentia-dashboard--marked
+          (list (ardentia-dashboard--maybe-face
+                 (format " | %d marked" (length ardentia-dashboard--marked))
+                 'ardentia-mark)))
      (if (eq (ardentia-dashboard--view-now) 'completed)
          (ardentia-dashboard--completed-segments compact)
        (append
@@ -675,24 +693,37 @@ none of them goes back to all."
     ardentia-dashboard-mode-map ardentia-dashboard-menu
   :keymap-doc "Keymap for `ardentia-dashboard-mode'."
   :menu-doc "Keys of the ardentia task list.
-Also bound: S-<up> and S-<down> (priority up and down), c (completed
-view) and r (review view)."
+Also bound: S-<up> and S-<down> (priority up and down), C-c C-q (tags),
+c (completed view) and r (review view).  Marks, tags, schedule, deadline,
+TODO state and priority work like in org-agenda."
   :groups
   (("Task at point"
     ("RET" "Open" ardentia-dashboard-enter)
     ("o" "Visit heading" ardentia-dashboard-visit)
     ("t" "Transcript" ardentia-dashboard-transcript)
     ("A" "Agent shell" ardentia-dashboard-agent-shell))
-   ("Review"
+   ("Review and run"
     ("a" "Accept" ardentia-dashboard-accept)
-    ("s" "Send back" ardentia-dashboard-send-back))
-   ("Run"
+    ("s" "Send back" ardentia-dashboard-send-back)
     ("x" "Run now" ardentia-dashboard-run)
     ("k" "Stop" ardentia-dashboard-stop))
-   ("Priority"
-    ("," "Set" ardentia-dashboard-priority)
-    ("+" "Up (S-<up>)" ardentia-dashboard-priority-up)
-    ("-" "Down (S-<down>)" ardentia-dashboard-priority-down))
+   ("Mark"
+    ("m" "Mark, next line" ardentia-dashboard-mark)
+    ("u" "Unmark, next line" ardentia-dashboard-unmark)
+    ("U" "Unmark all" ardentia-dashboard-unmark-all)
+    ("M-m" "Toggle mark" ardentia-dashboard-mark-toggle)
+    ("*" "Mark all" ardentia-dashboard-mark-all)
+    ("M-*" "Toggle all marks" ardentia-dashboard-mark-toggle-all)
+    ("%" "Mark by title regexp" ardentia-dashboard-mark-regexp))
+   ("Edit"
+    (":" "Tags (C-c C-q)" ardentia-dashboard-set-tags)
+    ("C-c C-s" "Schedule" ardentia-dashboard-schedule)
+    ("C-c C-d" "Deadline" ardentia-dashboard-deadline)
+    ("C-c C-t" "TODO state" ardentia-dashboard-todo)
+    ("," "Priority" ardentia-dashboard-priority)
+    ("+" "Priority up (S-<up>)" ardentia-dashboard-priority-up)
+    ("-" "Priority down (S-<down>)" ardentia-dashboard-priority-down)
+    ("B" "Bulk action on marked" ardentia-dashboard-bulk-action))
    ("View"
     ("1" "Dashboard" ardentia-dashboard)
     ("2" "Review (r)" ardentia-review-inbox)
@@ -701,7 +732,7 @@ view) and r (review view)."
     ("<backtab>" "Previous view" ardentia-dashboard-previous-view)
     ("g" "Refresh" ardentia-dashboard-refresh)
     ("d" "Toggle due date/time left" ardentia-dashboard-toggle-due)
-    ("u" "Usage" ardentia-usage-refresh)
+    ("$" "Usage" ardentia-usage-refresh)
     ("q" "Quit" quit-window))
    ("Filter"
     ("f" "Filter menu" ardentia-dashboard-filter-menu)
@@ -711,7 +742,8 @@ view) and r (review view)."
     ("P" "Cycle period (Completed)" ardentia-dashboard-cycle-period)
     ("w" "Cycle state (Completed)" ardentia-dashboard-cycle-state)))
   :alternates
-  (("S-<up>" . ardentia-dashboard-priority-up)
+  (("C-c C-q" . ardentia-dashboard-set-tags)
+   ("S-<up>" . ardentia-dashboard-priority-up)
    ("S-<down>" . ardentia-dashboard-priority-down)
    ("c" . ardentia-completed)
    ("r" . ardentia-review-inbox)))
@@ -725,6 +757,7 @@ completed tasks; see `ardentia-dashboard--view'.
 
 \\{ardentia-dashboard-mode-map}"
   (setq tabulated-list-padding 1)
+  (setq tabulated-list-printer #'ardentia-dashboard--print-entry)
   (setq tabulated-list-sort-key nil)
   (setq ardentia--current-task-function #'ardentia-dashboard--task-at-point)
   ;; The info line owns the header line; the column titles go into the buffer.
@@ -882,8 +915,11 @@ top."
   (let ((view (ardentia-dashboard--view-now)))
     (ardentia-dashboard--ensure-format view)
     (setq ardentia-dashboard--view view)
+    ;; A buffer already in this mode may predate the printer.
+    (setq tabulated-list-printer #'ardentia-dashboard--print-entry)
     (setq tabulated-list-entries (ardentia-dashboard--view-entries
                                   view (current-time)))
+    (ardentia-dashboard--prune-marks)
     (let ((marks (unless switched (ardentia-dashboard--remember-positions))))
       (tabulated-list-print)
       (ardentia-dashboard--update-layout)
@@ -1046,48 +1082,295 @@ The row of a running merge is not a task and signals a `user-error'."
       (user-error "Task is not waiting for review"))
     task))
 
-(defvar org-priority-highest)
-(defvar org-priority-lowest)
-
-(defun ardentia-dashboard--require-ready-task ()
-  "Return the task at point; require the ready queue (later included)."
-  (let ((task (ardentia-dashboard--require-task)))
-    (unless (eq (plist-get task :queue) 'ready)
-      (user-error "Priority can only be changed on ready or later tasks"))
-    task))
-
 (defun ardentia-dashboard--set-priority (action)
-  "Apply priority ACTION to the ready task at point.
+  "Apply priority ACTION to the task at point.
 The asynchronous refresh re-renders the dashboard afterwards."
-  (let ((task (ardentia-dashboard--require-ready-task)))
+  (let ((task (ardentia-dashboard--require-task)))
     (ardentia-set-priority-1 (plist-get task :file) (plist-get task :id)
                              action (plist-get task :line)
-                             (plist-get task :title))))
+                             (plist-get task :title)
+                             (ardentia--task-lifecycle-tags task))))
 
 (defun ardentia-dashboard-priority ()
-  "Set the priority of the ready or later task at point, like org-agenda.
+  "Set the priority of the task at point, like org-agenda.
 Prompt for a letter; SPC removes the cookie."
   (interactive)
-  (ardentia-dashboard--require-ready-task)
-  (let ((c (read-char-exclusive
-            (format "Priority %c-%c, SPC to remove: "
-                    org-priority-highest org-priority-lowest))))
-    (cond ((eq c ?\s) (ardentia-dashboard--set-priority 'remove))
-          ((and (>= (upcase c) org-priority-highest)
-                (<= (upcase c) org-priority-lowest))
-           (ardentia-dashboard--set-priority (upcase c)))
-          (t (user-error "Priority must be between `%c' and `%c'"
-                         org-priority-highest org-priority-lowest)))))
+  (ardentia-dashboard--require-task)
+  (ardentia-dashboard--set-priority (ardentia--read-priority)))
 
 (defun ardentia-dashboard-priority-up ()
-  "Raise the priority of the ready or later task at point."
+  "Raise the priority of the task at point."
   (interactive)
   (ardentia-dashboard--set-priority 'up))
 
 (defun ardentia-dashboard-priority-down ()
-  "Lower the priority of the ready or later task at point."
+  "Lower the priority of the task at point."
   (interactive)
   (ardentia-dashboard--set-priority 'down))
+
+(defun ardentia-dashboard-set-tags ()
+  "Set the tags of the task at point, like `org-agenda-set-tags'.
+Marks are not used; see `ardentia-dashboard-bulk-action'."
+  (interactive)
+  (ardentia-set-tags-1 (ardentia-dashboard--require-task)))
+
+(defun ardentia-dashboard-schedule (&optional arg)
+  "Schedule the task at point, like `org-agenda-schedule'.
+With a prefix ARG remove the schedule."
+  (interactive "P")
+  (let ((task (ardentia-dashboard--require-task)))
+    (ardentia-schedule-1 task arg (ardentia--read-planning-time 'scheduled arg))))
+
+(defun ardentia-dashboard-deadline (&optional arg)
+  "Set the deadline of the task at point, like `org-agenda-deadline'.
+With a prefix ARG remove the deadline."
+  (interactive "P")
+  (let ((task (ardentia-dashboard--require-task)))
+    (ardentia-deadline-1 task arg (ardentia--read-planning-time 'deadline arg))))
+
+(defun ardentia-dashboard-todo (&optional arg)
+  "Change the TODO state of the task at point, like `org-agenda-todo'.
+ARG is the prefix argument of `org-todo'.  Org may ask for a note; the
+file is saved once it is stored."
+  (interactive "P")
+  (ardentia-set-todo-1 (ardentia-dashboard--require-task) nil arg))
+
+;;;; Marks, like org-agenda
+
+(defun ardentia-dashboard--key-at-point (&optional strict)
+  "Return the key of the task row at point, or nil.
+A running merge is not a task.  With STRICT signal a `user-error' instead
+of returning nil."
+  (let ((id (tabulated-list-get-id)))
+    (cond ((null id) (and strict (user-error "No task here")))
+          ((plist-get id :merge)
+           (and strict (user-error "Not a task: a running merge")))
+          (t (ardentia--task-key id)))))
+
+(defun ardentia-dashboard--put-mark (on)
+  "Show the mark of the row at point when ON, else clear it."
+  (tabulated-list-put-tag
+   (if on (ardentia-dashboard--maybe-face ">" 'ardentia-mark) " "))
+  (force-mode-line-update))
+
+(defun ardentia-dashboard--print-entry (id cols)
+  "Print the row ID with the columns COLS, with its mark if it has one.
+This is the `tabulated-list-printer' of the task list, so every way of
+printing the rows shows the marks."
+  (tabulated-list-print-entry id cols)
+  (when (and ardentia-dashboard--marked
+             (not (plist-get id :merge))
+             (member (ardentia--task-key id) ardentia-dashboard--marked))
+    (save-excursion
+      (forward-line -1)
+      (ardentia-dashboard--put-mark t))))
+
+(defun ardentia-dashboard--marks-prunable-p ()
+  "Return non-nil when the list of the view is complete enough to prune marks.
+After a failed fetch, or before the first one, the list is empty and
+the marks must stay."
+  (if (eq (ardentia-dashboard--view-now) 'completed)
+      (not ardentia-dashboard--completed-error)
+    (and ardentia--state (not (plist-get ardentia--state :error)))))
+
+(defun ardentia-dashboard--prune-marks ()
+  "Drop the marks of tasks the current entries do not list any more."
+  (when (and ardentia-dashboard--marked
+             (ardentia-dashboard--marks-prunable-p))
+    (let ((keys (delq nil
+                      (mapcar (lambda (entry)
+                                (let ((id (car entry)))
+                                  (and id (not (plist-get id :merge))
+                                       (ardentia--task-key id))))
+                              tabulated-list-entries))))
+      (setq ardentia-dashboard--marked
+            (seq-filter (lambda (key) (member key keys))
+                        ardentia-dashboard--marked)))))
+
+(defun ardentia-dashboard--set-mark (on)
+  "Mark (ON) or unmark the task row at point.  Signal if it is no task."
+  (let ((key (ardentia-dashboard--key-at-point t)))
+    (if on
+        (unless (member key ardentia-dashboard--marked)
+          (push key ardentia-dashboard--marked))
+      (setq ardentia-dashboard--marked (delete key ardentia-dashboard--marked)))
+    (ardentia-dashboard--put-mark on)))
+
+(defun ardentia-dashboard--marked-p ()
+  "Return non-nil when the row at point is marked."
+  (let ((key (ardentia-dashboard--key-at-point)))
+    (and key (member key ardentia-dashboard--marked) t)))
+
+(defun ardentia-dashboard--map-task-rows (fn)
+  "Call FN with point at the start of every task row, top to bottom."
+  (save-excursion
+    (goto-char (point-min))
+    (while (not (eobp))
+      (when (ardentia-dashboard--key-at-point) (funcall fn))
+      (forward-line 1))))
+
+(defun ardentia-dashboard-mark (&optional n)
+  "Mark the task at point and move to the next line, like `org-agenda-bulk-mark'.
+With a numeric prefix N mark that many tasks in succession."
+  (interactive "p")
+  (let ((n (max 1 (or n 1))) (i 0))
+    (while (and (< i n) (or (= i 0) (ardentia-dashboard--key-at-point)))
+      (ardentia-dashboard--set-mark t)
+      (forward-line 1)
+      (setq i (1+ i)))))
+
+(defun ardentia-dashboard-unmark ()
+  "Unmark the task at point and move to the next line, like org-agenda's `u'."
+  (interactive)
+  (when (ardentia-dashboard--key-at-point)
+    (ardentia-dashboard--set-mark nil))
+  (forward-line 1))
+
+(defun ardentia-dashboard-unmark-all ()
+  "Unmark all tasks, like `org-agenda-bulk-unmark-all'."
+  (interactive)
+  (let ((n (length ardentia-dashboard--marked)))
+    (setq ardentia-dashboard--marked nil)
+    (tabulated-list-clear-all-tags)
+    (force-mode-line-update)
+    (message "Unmarked %d task%s" n (if (= n 1) "" "s"))))
+
+(defun ardentia-dashboard-mark-toggle ()
+  "Toggle the mark of the task at point, like `org-agenda-bulk-toggle'."
+  (interactive)
+  (ardentia-dashboard--set-mark (not (ardentia-dashboard--marked-p))))
+
+(defun ardentia-dashboard-mark-all ()
+  "Mark all tasks shown, like `org-agenda-bulk-mark-all'."
+  (interactive)
+  (ardentia-dashboard--map-task-rows
+   (lambda () (ardentia-dashboard--set-mark t)))
+  (message "%d task%s marked" (length ardentia-dashboard--marked)
+           (if (= (length ardentia-dashboard--marked) 1) "" "s")))
+
+(defun ardentia-dashboard-mark-toggle-all ()
+  "Toggle the mark of all tasks shown, like `org-agenda-bulk-toggle-all'."
+  (interactive)
+  (ardentia-dashboard--map-task-rows
+   (lambda () (ardentia-dashboard--set-mark (not (ardentia-dashboard--marked-p)))))
+  (message "%d task%s marked" (length ardentia-dashboard--marked)
+           (if (= (length ardentia-dashboard--marked) 1) "" "s")))
+
+(defun ardentia-dashboard-mark-regexp (regexp)
+  "Mark the tasks whose title matches REGEXP, ignoring case.
+Like `org-agenda-bulk-mark-regexp'."
+  (interactive (list (read-string "Mark tasks with title matching regexp: ")))
+  (when (condition-case nil (progn (string-match-p regexp "") nil)
+          (invalid-regexp t))
+    (user-error "Invalid regexp: %s" regexp))
+  (let ((n 0))
+    (ardentia-dashboard--map-task-rows
+     (lambda ()
+       (when (and (ardentia-dashboard--title-match-p
+                   regexp (plist-get (tabulated-list-get-id) :title))
+                  (not (ardentia-dashboard--marked-p)))
+         (ardentia-dashboard--set-mark t)
+         (setq n (1+ n)))))
+    (message "%d new task%s marked" n (if (= n 1) "" "s"))))
+
+;;;; Bulk action on the marked tasks
+
+(defun ardentia-dashboard--marked-tasks ()
+  "Return the marked tasks of the current entries."
+  (seq-filter (lambda (task)
+                (and (not (plist-get task :merge))
+                     (member (ardentia--task-key task)
+                             ardentia-dashboard--marked)))
+              (mapcar #'car tabulated-list-entries)))
+
+(defun ardentia-dashboard--task-buffers (tasks)
+  "Return the buffers visiting the files of TASKS that can be used."
+  (delq nil (mapcar (lambda (file) (ignore-errors (ardentia--task-buffer file)))
+                    (delete-dups (mapcar (lambda (task) (plist-get task :file))
+                                         tasks)))))
+
+(defun ardentia-dashboard--tag-candidates (tasks)
+  "Return the tags to complete over for TASKS.
+They are the tags of the files involved, of the tasks, and the ones of
+`org-tag-alist' and `org-tag-persistent-alist'."
+  (let (tags)
+    (dolist (buf (ardentia-dashboard--task-buffers tasks))
+      (with-current-buffer buf
+        (dolist (tag (org-with-wide-buffer (org-get-buffer-tags)))
+          (push (if (consp tag) (car tag) tag) tags))))
+    (dolist (task tasks) (setq tags (append (plist-get task :tags) tags)))
+    (dolist (alist (list org-tag-alist org-tag-persistent-alist))
+      (dolist (entry alist)
+        (when (stringp (car-safe entry)) (push (car entry) tags))))
+    (sort (delete-dups (copy-sequence tags)) #'string<)))
+
+(defun ardentia-dashboard--read-tag (prompt tasks)
+  "Read a tag with PROMPT, completing over the tags for TASKS."
+  (let ((tag (string-trim
+              (completing-read prompt
+                               (ardentia-dashboard--tag-candidates tasks)))))
+    (unless (ardentia--valid-tag-p tag)
+      (user-error "Not a valid tag: \"%s\"" tag))
+    tag))
+
+(defun ardentia-dashboard--read-todo-state (tasks)
+  "Read a TODO keyword for TASKS; the empty string removes the keyword."
+  (let ((keywords nil))
+    (dolist (buf (ardentia-dashboard--task-buffers tasks))
+      (dolist (kw (buffer-local-value 'org-todo-keywords-1 buf))
+        (unless (member kw keywords) (push kw keywords))))
+    (completing-read "TODO state (empty removes it): " (nreverse keywords))))
+
+(defun ardentia-dashboard--bulk-function (key arg tasks)
+  "Return the function that applies bulk action KEY to a task.
+Read what the action needs once, with ARG the prefix argument of the
+command.  TASKS are the marked tasks.  Signal a `user-error' for an
+unknown KEY."
+  (pcase key
+    (?+ (let ((tag (ardentia-dashboard--read-tag "Tag to add: " tasks)))
+          (lambda (_task) (org-toggle-tag tag 'on))))
+    (?- (let ((tag (ardentia-dashboard--read-tag "Tag to remove: " tasks)))
+          (lambda (_task) (org-toggle-tag tag 'off))))
+    ((or ?s ?d)
+     (let* ((kind (if (eq key ?s) 'scheduled 'deadline))
+            (time (ardentia--read-planning-time kind arg))
+            (arg (and arg '(4))))
+       (if (eq key ?s)
+           (lambda (_task) (org-schedule arg time))
+         (lambda (_task) (org-deadline arg time)))))
+    (?t (let ((state (ardentia-dashboard--read-todo-state tasks)))
+          (lambda (_task) (org-todo state))))
+    (?, (let ((action (ardentia--read-priority)))
+          (lambda (_task) (org-priority action))))
+    (_ (user-error "Unknown bulk action `%s'" (single-key-description key)))))
+
+(defun ardentia-dashboard-bulk-action (&optional arg)
+  "Apply an action to all marked tasks, like `org-agenda-bulk-action'.
+The key asked for is one of
+  +  add a tag                 -  remove a tag
+  s  schedule                  d  set the deadline
+  t  change the TODO state     ,  set the priority
+What the action needs is asked for once.  With a prefix ARG, `s' and `d'
+remove the schedule or deadline.  A task that cannot be changed is
+skipped.  Org writes no log entries or notes in a bulk action.  Afterwards
+all tasks are unmarked, unless `org-agenda-persistent-marks' is set."
+  (interactive "P")
+  (let ((tasks (ardentia-dashboard--marked-tasks)))
+    (unless tasks (user-error "No task is marked"))
+    (let* ((key (read-char-exclusive
+                 (format "Bulk action on %d task%s: [+]tag [-]untag [s]chedule [d]eadline [t]odo [,]priority "
+                         (length tasks) (if (cdr tasks) "s" ""))))
+           (fn (ardentia-dashboard--bulk-function key arg tasks)))
+      (unless (bound-and-true-p org-agenda-persistent-marks)
+        (setq ardentia-dashboard--marked nil)
+        (tabulated-list-clear-all-tags))
+      (let ((result (ardentia--without-logging
+                      (ardentia-bulk-edit tasks fn))))
+        (message "Bulk: %d done, %d skipped%s"
+                 (plist-get result :done) (plist-get result :skipped)
+                 (if (plist-get result :reason)
+                     (format " (%s)" (plist-get result :reason))
+                   ""))))))
 
 (defun ardentia-dashboard-review ()
   "Open the review buffer of the task at point."

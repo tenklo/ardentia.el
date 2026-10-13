@@ -2847,8 +2847,9 @@ otherwise.  It logs the arguments, and the stdin text of a send."
     (ardentia-set-priority-1 f "prio-1" 'remove)
     (should (string-match-p "^\\* TODO Ready one :aiready:$"
                             (ardentia-test--file-text f)))
-    ;; Only :aiready: headings; the review task stays untouched.
-    (should-error (ardentia-set-priority-1 f "prio-2" ?A) :type 'user-error)
+    ;; A row listed under :aiready: whose heading lost it is out of date.
+    (should-error (ardentia-set-priority-1 f "prio-2" ?A nil nil '("aiready"))
+                  :type 'user-error)
     (should (string-match-p "^\\* TODO Review one :humanreview:$"
                             (ardentia-test--file-text f)))))
 
@@ -2867,26 +2868,27 @@ otherwise.  It logs the arguments, and the stdin text of a send."
       (cl-letf (((symbol-function 'ardentia-set-priority-1)
                  (lambda (&rest args) (setq called args)))
                 ((symbol-function 'read-char-exclusive) (lambda (&rest _) ?a)))
-        ;; Review and running tasks are refused before any prompt or write.
-        (dolist (queue '(review running))
-          (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
-                     (lambda (&rest _) (list :queue queue :file "/o/x.org" :id "i"))))
-            (should (equal (cadr (should-error (ardentia-dashboard-priority)
-                                               :type 'user-error))
-                           "Priority can only be changed on ready or later tasks"))
-            (should-error (ardentia-dashboard-priority-up) :type 'user-error)))
-        (should-not called)
+        ;; No row, or a running merge: refused before any prompt or write.
         (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
-                   (lambda (&rest _) (list :queue 'ready :file "/o/x.org" :id "i"))))
-          (ardentia-dashboard-priority)
-          (should (equal called '("/o/x.org" "i" ?A nil nil)))
-          (ardentia-dashboard-priority-down)
-          (should (equal called '("/o/x.org" "i" down nil nil))))
+                   (lambda (&rest _) (list :merge t :dir "/o/m"))))
+          (should-error (ardentia-dashboard-priority) :type 'user-error)
+          (should-error (ardentia-dashboard-priority-up) :type 'user-error))
+        (should-not called)
+        ;; Every queue is allowed; the row's lifecycle tag is checked.
+        (dolist (queue '(ready review running))
+          (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
+                     (lambda (&rest _)
+                       (list :queue queue :file "/o/x.org" :id "i"
+                             :tags '("x" "humanreview")))))
+            (ardentia-dashboard-priority)
+            (should (equal called '("/o/x.org" "i" ?A nil nil ("humanreview"))))
+            (ardentia-dashboard-priority-down)
+            (should (equal called '("/o/x.org" "i" down nil nil ("humanreview"))))))
         (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
                    (lambda (&rest _) (list :queue 'ready :file "/o/x.org" :id "i")))
                   ((symbol-function 'read-char-exclusive) (lambda (&rest _) ?\s)))
           (ardentia-dashboard-priority)
-          (should (equal called '("/o/x.org" "i" remove nil nil))))
+          (should (equal called '("/o/x.org" "i" remove nil nil nil))))
         (cl-letf (((symbol-function 'ardentia-dashboard--task-at-point)
                    (lambda (&rest _) (list :queue 'ready :file "/o/x.org" :id "i")))
                   ((symbol-function 'read-char-exclusive) (lambda (&rest _) ?z)))
@@ -2939,7 +2941,7 @@ otherwise.  It logs the arguments, and the stdin text of a send."
 
 (ert-deftest ardentia-test-priority-no-id-needs-aiready-tag ()
   (ardentia-test--with-org-file f "* TODO Review :humanreview:\n"
-    (should-error (ardentia-set-priority-1 f nil ?A 1 "Review")
+    (should-error (ardentia-set-priority-1 f nil ?A 1 "Review" '("aiready"))
                   :type 'user-error)
     (should (equal (ardentia-test--file-text f) "* TODO Review :humanreview:\n"))))
 
@@ -2952,7 +2954,7 @@ otherwise.  It logs the arguments, and the stdin text of a send."
                  (list :queue 'ready :file "/o/x.org" :id nil :line 7
                        :title "Fresh"))))
       (ardentia-dashboard--set-priority 'up)
-      (should (equal called '("/o/x.org" nil up 7 "Fresh"))))))
+      (should (equal called '("/o/x.org" nil up 7 "Fresh" nil))))))
 
 (ert-deftest ardentia-test-run-no-id-creates-id-and-saves ()
   (ardentia-test--with-org-file f "* TODO Other\n* TODO Go :aiready:\nbody\n"
@@ -4199,7 +4201,7 @@ Bindings inherited from a parent keymap are not included."
           (setq n (1+ n))
           (should (memq (cdr a) cmds))
           (should (eq (keymap-lookup (symbol-value map-sym) (car a)) (cdr a))))))
-    (should (= n 7))))
+    (should (= n 11))))
 
 ;;;; The "For you" line of the run report
 
@@ -4480,5 +4482,369 @@ Text
       (should (ardentia-test--has-face (aref (cadar entries) 0)
                                        'ardentia-queue-running))
       (should (equal (cadar entries) (ardentia--task-row task now))))))
+
+;;;; Org integration: marks, edits and bulk actions
+
+(defconst ardentia-test--edit-text-1
+  "* TODO Alpha :aiready:
+:PROPERTIES:
+:ID:       ed-1
+:END:
+* TODO Beta :humanreview:
+:PROPERTIES:
+:ID:       ed-2
+:AI_STATUS: completed
+:END:
+* TODO Gamma :aiready:
+:PROPERTIES:
+:ID:       ed-3
+:END:
+"
+  "First org file of the edit fixtures.")
+
+(defconst ardentia-test--edit-text-2
+  "* TODO Delta :aiready:
+:PROPERTIES:
+:ID:       ed-4
+:END:
+"
+  "Second org file of the edit fixtures.")
+
+(defun ardentia-test--edit-task (title queue file id)
+  "Return the list task TITLE of QUEUE at ID in FILE."
+  (ardentia-test--lt title queue nil :file file :id id
+                     :tags (list (if (eq queue 'ready) "aiready" "humanreview"))))
+
+(defmacro ardentia-test--with-edit-list (f1 f2 counts &rest body)
+  "Run BODY in a task list over two real org files F1 and F2.
+COUNTS is a variable bound to a cons (SAVES . REFRESHES)."
+  (declare (indent 3))
+  `(ardentia-test--with-org-file ,f1 ardentia-test--edit-text-1
+     (ardentia-test--with-org-file ,f2 ardentia-test--edit-text-2
+       (ardentia-test--with-timer-sandbox
+         (let* ((,counts (cons 0 0))
+                (ardentia--state
+                 (list :tasks
+                       (list (ardentia-test--edit-task "Alpha" 'ready ,f1 "ed-1")
+                             (ardentia-test--edit-task "Beta" 'review ,f1 "ed-2")
+                             (ardentia-test--edit-task "Gamma" 'ready ,f1 "ed-3")
+                             (ardentia-test--edit-task "Delta" 'ready ,f2 "ed-4"))
+                       :host "alpha" :time (current-time)))
+                (ardentia-dashboard-show-later t)
+                (real-save (symbol-function 'save-buffer))
+                (buf (get-buffer-create " *ardentia-test-edit*")))
+           (cl-letf (((symbol-function 'ardentia-hosts)
+                      (lambda () '(:hosts ("alpha") :default-host "alpha")))
+                     ((symbol-function 'ardentia-dashboard--completed-refresh)
+                      #'ignore)
+                     ((symbol-function 'save-buffer)
+                      (lambda (&rest args)
+                        (cl-incf (car ,counts)) (apply real-save args)))
+                     ((symbol-function 'ardentia-dashboard-refresh-all)
+                      (lambda (&rest _) (cl-incf (cdr ,counts)))))
+             (unwind-protect
+                 (with-current-buffer buf
+                   (ardentia-dashboard-mode)
+                   (ardentia-dashboard--render)
+                   ,@body)
+               (kill-buffer buf))))))))
+
+(defun ardentia-test--marked-titles ()
+  "Return the titles of the marked tasks of the current list, sorted."
+  (sort (mapcar (lambda (e) (plist-get (car e) :title))
+                (seq-filter (lambda (e)
+                              (member (ardentia--task-key (car e))
+                                      ardentia-dashboard--marked))
+                            tabulated-list-entries))
+        #'string<))
+
+(defun ardentia-test--mark-glyphs ()
+  "Return the titles of the rows that show a mark glyph, sorted."
+  (let (r)
+    (ardentia-dashboard--map-task-rows
+     (lambda ()
+       (when (eq (char-after (line-beginning-position)) ?>)
+         (push (ardentia-test--at-title) r))))
+    (sort r #'string<)))
+
+(ert-deftest ardentia-test-marks-basic ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (ardentia-test--goto "Alpha")
+    (ardentia-dashboard-mark)
+    (should (equal (ardentia-test--marked-titles) '("Alpha")))
+    (should (equal (ardentia-test--mark-glyphs) '("Alpha")))
+    (should (string-match-p "1 marked" (ardentia-test--header)))
+    ;; mark moved to the next line
+    (let ((next (ardentia-test--at-title)))
+      (should-not (equal next "Alpha"))
+      (ardentia-dashboard-mark-toggle)
+      (should (member next (ardentia-test--marked-titles)))
+      (ardentia-dashboard-mark-toggle)
+      (should-not (member next (ardentia-test--marked-titles))))
+    (ardentia-test--goto "Alpha")
+    (ardentia-dashboard-unmark)
+    (should-not ardentia-dashboard--marked)
+    (should-not (ardentia-test--mark-glyphs))
+    (should-not (string-match-p "marked" (ardentia-test--header)))
+    (ardentia-dashboard-mark-all)
+    (should (= (length ardentia-dashboard--marked) 4))
+    (should (= (length (ardentia-test--mark-glyphs)) 4))
+    (ardentia-dashboard-unmark-all)
+    (should-not ardentia-dashboard--marked)
+    (should-not (ardentia-test--mark-glyphs))
+    (ardentia-test--goto "Beta")
+    (ardentia-dashboard-mark-toggle)
+    (ardentia-dashboard-mark-toggle-all)
+    (should (equal (ardentia-test--marked-titles) '("Alpha" "Delta" "Gamma")))
+    (ardentia-dashboard-unmark-all)
+    (ardentia-dashboard-mark-regexp "^[ab]")
+    (should (equal (ardentia-test--marked-titles) '("Alpha" "Beta")))))
+
+(ert-deftest ardentia-test-marks-survive-render-and-view ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (ardentia-test--goto "Beta")
+    (ardentia-dashboard-mark)
+    (ardentia-dashboard--render)
+    (should (equal (ardentia-test--marked-titles) '("Beta")))
+    (should (equal (ardentia-test--mark-glyphs) '("Beta")))
+    ;; the tasks are listed again as new plists
+    (setq ardentia--state
+          (plist-put (copy-sequence ardentia--state) :tasks
+                     (reverse (copy-sequence (plist-get ardentia--state :tasks)))))
+    (ardentia-dashboard--render)
+    (should (equal (ardentia-test--mark-glyphs) '("Beta")))
+    ;; view switch and back
+    (ardentia-dashboard-next-view)
+    (should (eq (ardentia-dashboard--view-now) 'review))
+    (should (equal (ardentia-test--mark-glyphs) '("Beta")))
+    (ardentia-dashboard-previous-view)
+    (should (equal (ardentia-test--marked-titles) '("Beta")))
+    (should (equal (ardentia-test--mark-glyphs) '("Beta")))
+    ;; a reused buffer keeps working
+    (ardentia-dashboard-mode)
+    (ardentia-dashboard--render)
+    (should (eq tabulated-list-printer #'ardentia-dashboard--print-entry))))
+
+(ert-deftest ardentia-test-marks-vanished-dropped ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (ardentia-dashboard-mark-all)
+    (setq ardentia--state
+          (plist-put (copy-sequence ardentia--state) :tasks
+                     (seq-remove (lambda (tk) (equal (plist-get tk :title) "Delta"))
+                                 (plist-get ardentia--state :tasks))))
+    (ardentia-dashboard--render)
+    (should (equal (ardentia-test--marked-titles) '("Alpha" "Beta" "Gamma")))
+    (should (= (length ardentia-dashboard--marked) 3))))
+
+(ert-deftest ardentia-test-marks-merge-rows-unmarkable ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (let ((merge (list :merge t :dir "/m/x" :title "Merge")))
+      (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda (&rest _) merge)))
+        (should-error (ardentia-dashboard-mark) :type 'user-error)
+        (should-not ardentia-dashboard--marked)))))
+
+(ert-deftest ardentia-test-keys-list ()
+  (dolist (k '(("m" . ardentia-dashboard-mark) ("u" . ardentia-dashboard-unmark)
+               ("U" . ardentia-dashboard-unmark-all)
+               ("M-m" . ardentia-dashboard-mark-toggle)
+               ("*" . ardentia-dashboard-mark-all)
+               ("M-*" . ardentia-dashboard-mark-toggle-all)
+               ("%" . ardentia-dashboard-mark-regexp)
+               (":" . ardentia-dashboard-set-tags)
+               ("C-c C-q" . ardentia-dashboard-set-tags)
+               ("C-c C-s" . ardentia-dashboard-schedule)
+               ("C-c C-d" . ardentia-dashboard-deadline)
+               ("C-c C-t" . ardentia-dashboard-todo)
+               ("B" . ardentia-dashboard-bulk-action)
+               ("$" . ardentia-usage-refresh) ("t" . ardentia-dashboard-transcript)))
+    (should (eq (keymap-lookup ardentia-dashboard-mode-map (car k)) (cdr k)))))
+
+(ert-deftest ardentia-test-edit-single-on-non-ready-row ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (ardentia-test--goto "Beta")
+    ;; priority on a review row
+    (ardentia-dashboard-priority-up)
+    (should (string-match-p "^\\* TODO \\[#C\\] Beta +:humanreview:$"
+                            (ardentia-test--file-text f1)))
+    ;; tags
+    (cl-letf (((symbol-function 'completing-read-multiple)
+               (lambda (&rest _) '("humanreview" "extra")))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _) "humanreview:extra")))
+      (call-interactively #'ardentia-dashboard-set-tags))
+    (should (string-match-p "^\\* TODO \\[#C\\] Beta +:humanreview:extra:$"
+                            (ardentia-test--file-text f1)))
+    ;; schedule and deadline, date read once each
+    (let ((reads 0))
+      (cl-letf (((symbol-function 'org-read-date)
+                 (lambda (&rest _) (cl-incf reads) "2031-03-04")))
+        (let ((current-prefix-arg nil))
+          (call-interactively #'ardentia-dashboard-schedule)
+          (call-interactively #'ardentia-dashboard-deadline))
+        (should (= reads 2))))
+    (should (string-match-p "SCHEDULED: <2031-03-04 [A-Za-z]+>"
+                            (ardentia-test--file-text f1)))
+    (should (string-match-p "DEADLINE: <2031-03-04 [A-Za-z]+>"
+                            (ardentia-test--file-text f1)))
+    (should-not (buffer-modified-p (find-buffer-visiting f1)))
+    ;; C-u removes without a prompt
+    (cl-letf (((symbol-function 'org-read-date)
+               (lambda (&rest _) (error "No prompt wanted"))))
+      (let ((current-prefix-arg '(4)))
+        (call-interactively #'ardentia-dashboard-schedule)))
+    (should-not (string-match-p "SCHEDULED" (ardentia-test--file-text f1)))
+    (should (string-match-p "DEADLINE" (ardentia-test--file-text f1)))
+    ;; other headings stay untouched
+    (should (string-match-p "^\\* TODO Alpha :aiready:$" (ardentia-test--file-text f1)))))
+
+(ert-deftest ardentia-test-edit-single-todo ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (ardentia-test--goto "Delta")
+    (cl-letf (((symbol-function 'read-char-exclusive) (lambda (&rest _) ?w))
+              ((symbol-function 'pop-to-buffer-same-window) #'ignore))
+      (call-interactively #'ardentia-dashboard-todo)
+      (when (memq 'org-add-log-note post-command-hook) (org-add-log-note)))
+    (should (string-match-p "^\\* WAIT Delta :aiready:$"
+                            (ardentia-test--file-text f2)))
+    (should-not (buffer-modified-p (find-buffer-visiting f2)))
+    (should-not (memq 'org-add-log-note post-command-hook))))
+
+(ert-deftest ardentia-test-edit-refuses-changed-tag ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (with-temp-file f2
+      (insert "* TODO Delta :other:\n:PROPERTIES:\n:ID:       ed-4\n:END:\n"))
+    (ardentia-test--goto "Delta")
+    (should-error (ardentia-dashboard-priority-up) :type 'user-error)
+    (should (string-match-p ":other:$" (ardentia-test--file-text f2)))))
+
+(defvar org-agenda-persistent-marks)
+
+(defun ardentia-test--bulk (key &optional arg)
+  "Run `ardentia-dashboard-bulk-action' with KEY typed and prefix ARG."
+  (cl-letf (((symbol-function 'read-char-exclusive) (lambda (&rest _) key)))
+    (ardentia-dashboard-bulk-action arg)))
+
+(ert-deftest ardentia-test-bulk-no-marks ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (should (equal (cadr (should-error (ardentia-dashboard-bulk-action)
+                                       :type 'user-error))
+                   "No task is marked"))))
+
+(ert-deftest ardentia-test-bulk-tags-schedule-deadline ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (ardentia-test--goto "Alpha") (ardentia-dashboard-mark)
+    (ardentia-test--goto "Gamma") (ardentia-dashboard-mark)
+    (ardentia-test--goto "Delta") (ardentia-dashboard-mark)
+    ;; add a tag: three tasks, two files
+    (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "bulk")))
+      (ardentia-test--bulk ?+))
+    (should (= (car counts) 2))
+    (should (= (cdr counts) 1))
+    (should (= (length (seq-filter (lambda (l) (string-match-p ":bulk:" l))
+                                   (split-string (ardentia-test--file-text f1) "\n")))
+               2))
+    (should (string-match-p ":bulk:" (ardentia-test--file-text f2)))
+    ;; marks are gone after the action
+    (should-not ardentia-dashboard--marked)
+    (should-not (ardentia-test--mark-glyphs))
+    ;; remove the tag again; marks kept with persistent marks
+    (setcar counts 0) (setcdr counts 0)
+    (let ((org-agenda-persistent-marks t))
+      (ardentia-dashboard-mark-all)
+      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "bulk")))
+        (ardentia-test--bulk ?-))
+      (should (= (length ardentia-dashboard--marked) 4)))
+    (should (= (car counts) 2))
+    (should (= (cdr counts) 1))
+    (should-not (string-match-p ":bulk:" (ardentia-test--file-text f1)))
+    (should-not (string-match-p ":bulk:" (ardentia-test--file-text f2)))
+    (ardentia-dashboard-unmark-all)
+    ;; schedule and deadline, the date is read once
+    (ardentia-dashboard-mark-all)
+    (let ((reads 0))
+      (cl-letf (((symbol-function 'org-read-date)
+                 (lambda (&rest _) (cl-incf reads) "2031-05-06")))
+        (ardentia-test--bulk ?s)
+        (should (= reads 1))
+        (ardentia-dashboard-mark-all)
+        (ardentia-test--bulk ?d)
+        (should (= reads 2))))
+    (dolist (f (list f1 f2))
+      (should (string-match-p "SCHEDULED: <2031-05-06" (ardentia-test--file-text f)))
+      (should (string-match-p "DEADLINE: <2031-05-06" (ardentia-test--file-text f))))
+    (should-not (buffer-modified-p (find-buffer-visiting f1)))
+    ;; C-u removes
+    (ardentia-dashboard-mark-all)
+    (ardentia-test--bulk ?s '(4))
+    (should-not (string-match-p "SCHEDULED" (ardentia-test--file-text f1)))
+    (should (string-match-p "DEADLINE" (ardentia-test--file-text f1)))))
+
+(ert-deftest ardentia-test-bulk-skips-failing-task ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (ardentia-dashboard-mark-all)
+    ;; Gamma lost its tag since the list was drawn
+    (with-temp-file f1
+      (insert (replace-regexp-in-string "Gamma :aiready:" "Gamma :other:"
+                                        ardentia-test--edit-text-1)))
+    (let (msg)
+      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "bulk"))
+                ((symbol-function 'message)
+                 (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+        (ardentia-test--bulk ?+))
+      (should (string-match-p "^Bulk: 3 done, 1 skipped" msg))
+      (should (string-match-p "refresh" msg)))
+    (should (= (car counts) 2))
+    (should (= (cdr counts) 1))))
+
+;;;; Org integration in the review buffer
+
+(ert-deftest ardentia-test-review-keys-beat-org ()
+  (with-temp-buffer
+    (ardentia-review-mode)
+    (dolist (k '(("C-c C-s" . ardentia-review-schedule)
+                 ("C-c C-d" . ardentia-review-deadline)
+                 ("C-c C-t" . ardentia-review-todo)
+                 ("C-c C-q" . ardentia-review-set-tags)
+                 (":" . ardentia-review-set-tags)
+                 ("," . ardentia-review-priority)
+                 ("+" . ardentia-review-priority-up)
+                 ("-" . ardentia-review-priority-down)
+                 ("S-<up>" . ardentia-review-priority-up)
+                 ("S-<down>" . ardentia-review-priority-down)))
+      (should (eq (key-binding (kbd (car k))) (cdr k))))))
+
+(ert-deftest ardentia-test-review-edits-write-heading-and-render ()
+  (ardentia-test--with-org-file f ardentia-test--edit-text-1
+    (let (rev (renders 0))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (setq rev b))))
+        (ardentia-review-task (list :file f :id "ed-2" :title "Beta")))
+      (unwind-protect
+          (with-current-buffer rev
+            (let ((real (symbol-function 'ardentia-review-render)))
+              (cl-letf (((symbol-function 'ardentia-review-render)
+                         (lambda (&rest a) (cl-incf renders) (apply real a))))
+                (ardentia-review-priority-up)
+                (should (= renders 1))
+                (should (string-match-p "^\\* TODO \\[#C\\] Beta +:humanreview:$"
+                                        (ardentia-test--file-text f)))
+                (cl-letf (((symbol-function 'org-read-date)
+                           (lambda (&rest _) "2031-07-08")))
+                  (let ((current-prefix-arg nil))
+                    (call-interactively #'ardentia-review-schedule)
+                    (call-interactively #'ardentia-review-deadline)))
+                (should (= renders 3))
+                (should (string-match-p "SCHEDULED: <2031-07-08"
+                                        (ardentia-test--file-text f)))
+                (should (string-match-p "DEADLINE: <2031-07-08"
+                                        (ardentia-test--file-text f)))
+                (cl-letf (((symbol-function 'completing-read-multiple)
+                           (lambda (&rest _) '("humanreview" "more")))
+                          ((symbol-function 'completing-read)
+                           (lambda (&rest _) "humanreview:more")))
+                  (call-interactively #'ardentia-review-set-tags))
+                (should (string-match-p ":humanreview:more:"
+                                        (ardentia-test--file-text f)))
+                (should-not (buffer-modified-p (find-buffer-visiting f))))))
+        (kill-buffer rev)))))
 
 ;;; ardentia-test.el ends here

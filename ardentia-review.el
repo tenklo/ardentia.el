@@ -37,6 +37,11 @@
 ;; the real heading, saves the file when it was unmodified, and renders
 ;; the buffer again, so the note shows under "Your notes after the
 ;; report".  `C-c C-k' cancels.
+;;
+;; Tags, schedule, deadline, TODO state and priority of the task are
+;; edited with the keys of org-agenda (`:', `C-c C-s', `C-c C-d',
+;; `C-c C-t', `,' `+' `-'), on the real heading; the buffer is rendered
+;; again afterwards.
 
 ;;; Code:
 
@@ -318,7 +323,8 @@ Toggle in a buffer with \\[toggle-truncate-lines]."
 (ardentia-define-keys-and-menu
     ardentia-review-mode-map ardentia-review-menu
   :keymap-doc "Keymap for `ardentia-review-mode'."
-  :menu-doc "Keys of the ardentia review buffer."
+  :menu-doc "Keys of the ardentia review buffer.
+Also bound: C-c C-q (tags), S-<up> and S-<down> (priority up and down)."
   :groups
   (("Review"
     ("a" "Accept" ardentia-review-accept)
@@ -328,11 +334,22 @@ Toggle in a buffer with \\[toggle-truncate-lines]."
     ("o" "Visit heading" ardentia-review-visit)
     ("t" "Transcript" ardentia-review-transcript)
     ("z" "Add note to task" ardentia-review-add-note))
+   ("Edit"
+    (":" "Tags" ardentia-review-set-tags)
+    ("C-c C-s" "Schedule" ardentia-review-schedule)
+    ("C-c C-d" "Deadline" ardentia-review-deadline)
+    ("C-c C-t" "TODO state" ardentia-review-todo)
+    ("," "Priority" ardentia-review-priority)
+    ("+" "Priority up" ardentia-review-priority-up)
+    ("-" "Priority down" ardentia-review-priority-down))
    ("View"
     ("g" "Re-render" ardentia-review-render)
     ("q" "Quit" quit-window)))
   :alternates
-  (("C-c C-z" . ardentia-review-add-note)))
+  (("C-c C-z" . ardentia-review-add-note)
+   ("C-c C-q" . ardentia-review-set-tags)
+   ("S-<up>" . ardentia-review-priority-up)
+   ("S-<down>" . ardentia-review-priority-down)))
 
 (define-derived-mode ardentia-review-mode org-mode "Ardentia-Review"
   "Read-only org view of one task waiting for review.
@@ -429,11 +446,26 @@ buffer had unsaved changes before) and :review-buffer.")
   "Forget the pending note."
   (setq ardentia-review--pending-note nil))
 
+(defun ardentia-review--finish-pending (pending)
+  "Finish the edit PENDING describes, a plist like `ardentia-review--pending-note'.
+Save the task buffer when it was unmodified before, render the review
+buffer again and refresh the dashboards."
+  (ardentia--finish-buffer (plist-get pending :buffer)
+                           (plist-get pending :was-modified))
+  (let ((review (plist-get pending :review-buffer)))
+    (when (buffer-live-p review)
+      (with-current-buffer review (ardentia-review-render))))
+  (when (and (fboundp 'ardentia-dashboard--live-buffers)
+             (ardentia-dashboard--live-buffers))
+    (ardentia-dashboard-refresh-all)))
+
 (defun ardentia-review--note-stored ()
   "Finish the note of `ardentia-review--pending-note' once org stored it.
 Runs on `org-after-note-stored-hook' with point at the new note.  Save the
 task buffer when it was unmodified before, render the review buffer again
-and refresh the dashboards.  Do nothing for any other note."
+and refresh the dashboards.  Do nothing for any other note.  The pending
+record is also made by the edits of `ardentia-actions' that org logs
+(TODO state, schedule, deadline)."
   (let ((pending ardentia-review--pending-note))
     (when (and pending (eq (plist-get pending :buffer) (current-buffer)))
       (condition-case err
@@ -442,17 +474,21 @@ and refresh the dashboards.  Do nothing for any other note."
                          (org-entry-get nil "ID"))
                        (plist-get pending :id))
             (ardentia-review--clear-pending-note)
-            (if (plist-get pending :was-modified)
-                (message "ardentia: %s has unsaved changes; the timer only sees saved state"
-                         (file-name-nondirectory (or buffer-file-name (buffer-name))))
-              (save-buffer))
-            (let ((review (plist-get pending :review-buffer)))
-              (when (buffer-live-p review)
-                (with-current-buffer review (ardentia-review-render))))
-            (when (and (fboundp 'ardentia-dashboard--live-buffers)
-                       (ardentia-dashboard--live-buffers))
-              (ardentia-dashboard-refresh-all)))
+            (ardentia-review--finish-pending pending))
         (error (message "ardentia: finishing the note failed: %s"
+                        (error-message-string err)))))))
+
+(defun ardentia-review--abandon-pending-note ()
+  "Forget the pending note; finish the edit it belonged to, if any.
+A cancelled note of a TODO state, schedule or deadline change leaves the
+change itself in the buffer; it is saved like a stored one."
+  (let ((pending ardentia-review--pending-note))
+    (ardentia-review--clear-pending-note)
+    (when (and pending (plist-get pending :changed)
+               (buffer-live-p (plist-get pending :buffer)))
+      (condition-case err
+          (ardentia-review--finish-pending pending)
+        (error (message "ardentia: finishing the change failed: %s"
                         (error-message-string err)))))))
 
 (defun ardentia-review--watch-note-buffer ()
@@ -463,7 +499,7 @@ deferred to a timer; a cancelled note then leaves no record behind."
   (when ardentia-review--pending-note
     (add-hook 'kill-buffer-hook
               (lambda ()
-                (run-at-time 0 nil #'ardentia-review--clear-pending-note))
+                (run-at-time 0 nil #'ardentia-review--abandon-pending-note))
               nil t)))
 
 (add-hook 'org-after-note-stored-hook #'ardentia-review--note-stored)
@@ -490,6 +526,75 @@ unmodified before."
             (user-error "%s" ardentia--changed-message))
           (org-add-log-setup 'note))))
     (setq ardentia-review--pending-note pending)))
+
+;;;; Editing the task like org-agenda
+
+(defun ardentia-review--edit (fn)
+  "Call FN with the task of this review buffer, then render the buffer again.
+FN returns `deferred' when org still has to log the change: the buffer is
+rendered once that is done."
+  (unless (and ardentia-review--task (derived-mode-p 'ardentia-review-mode))
+    (user-error "Not an ardentia review buffer"))
+  (unless (eq (funcall fn (append ardentia-review--task
+                                  (list :tags (plist-get ardentia-review--info
+                                                         :tags))))
+              'deferred)
+    (ardentia-review-render)))
+
+(defun ardentia-review-set-tags ()
+  "Set the tags of the task of this review buffer, like `org-agenda-set-tags'."
+  (interactive)
+  (ardentia-review--edit #'ardentia-set-tags-1))
+
+(defun ardentia-review-schedule (&optional arg)
+  "Schedule the task of this review buffer, like `org-agenda-schedule'.
+With a prefix ARG remove the schedule."
+  (interactive "P")
+  (let ((time (ardentia--read-planning-time 'scheduled arg))
+        (buf (current-buffer)))
+    (ardentia-review--edit
+     (lambda (task) (ardentia-schedule-1 task arg time buf)))))
+
+(defun ardentia-review-deadline (&optional arg)
+  "Set the deadline of the task of this review buffer, like `org-agenda-deadline'.
+With a prefix ARG remove the deadline."
+  (interactive "P")
+  (let ((time (ardentia--read-planning-time 'deadline arg))
+        (buf (current-buffer)))
+    (ardentia-review--edit
+     (lambda (task) (ardentia-deadline-1 task arg time buf)))))
+
+(defun ardentia-review-todo (&optional arg)
+  "Change the TODO state of the task of this review buffer, like `org-agenda-todo'.
+ARG is the prefix argument of `org-todo'."
+  (interactive "P")
+  (let ((buf (current-buffer)))
+    (ardentia-review--edit
+     (lambda (task) (ardentia-set-todo-1 task nil arg buf)))))
+
+(defun ardentia-review--set-priority (action)
+  "Apply priority ACTION to the task of this review buffer."
+  (ardentia-review--edit
+   (lambda (task)
+     (ardentia-set-priority-1 (plist-get task :file) (plist-get task :id)
+                              action (plist-get task :line)
+                              (plist-get task :title)
+                              (ardentia--task-lifecycle-tags task)))))
+
+(defun ardentia-review-priority ()
+  "Set the priority of the task of this review buffer; SPC removes it."
+  (interactive)
+  (ardentia-review--set-priority (ardentia--read-priority)))
+
+(defun ardentia-review-priority-up ()
+  "Raise the priority of the task of this review buffer."
+  (interactive)
+  (ardentia-review--set-priority 'up))
+
+(defun ardentia-review-priority-down ()
+  "Lower the priority of the task of this review buffer."
+  (interactive)
+  (ardentia-review--set-priority 'down))
 
 (provide 'ardentia-review)
 ;;; ardentia-review.el ends here
