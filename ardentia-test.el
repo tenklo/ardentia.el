@@ -3242,6 +3242,7 @@ fetching and the hosts file are replaced by fixtures, the timer is boxed."
                     ("f" . ardentia-dashboard-filter-menu)
                     ("h" . ardentia-dashboard-cycle-host)
                     ("/" . ardentia-dashboard-filter-title)
+                    ("\\" . ardentia-dashboard-filter-tags)
                     ("l" . ardentia-dashboard-toggle-later)
                     ("P" . ardentia-dashboard-cycle-period)
                     ("w" . ardentia-dashboard-cycle-state)))
@@ -3335,6 +3336,74 @@ fetching and the hosts file are replaced by fixtures, the timer is boxed."
     (ardentia-dashboard-filter-title "")
     (should (null ardentia-dashboard--filter-title))
     (should (= (length (ardentia-test--shown)) 4))))
+
+(ert-deftest ardentia-test-list-tag-filter ()
+  (ardentia-test--with-list
+    ;; direct matching: exact, case-sensitive, AND
+    (should (ardentia-dashboard--tags-match-p nil '("a")))
+    (should (ardentia-dashboard--tags-match-p '("a" "-b") '("a" "c")))
+    (should-not (ardentia-dashboard--tags-match-p '("a" "-b") '("a" "b")))
+    (should-not (ardentia-dashboard--tags-match-p '("A") '("a")))
+    (should-not (ardentia-dashboard--tags-match-p '("a") '("ab")))
+    (should (equal (ardentia-dashboard--normalize-tag-specs
+                    '("+foo" " -bar " "" "+" "-" "foo"))
+                   '("foo" "-bar")))
+    ;; required tag, in all views
+    (ardentia-dashboard-filter-tags '("humanreview"))
+    (should (equal (sort (copy-sequence (ardentia-test--shown)) #'string<)
+                   '("Alpha" "Beta" "Eps")))
+    (ardentia-dashboard--switch-view 'review)
+    (should (equal (sort (copy-sequence (ardentia-test--shown)) #'string<)
+                   '("Alpha" "Beta")))
+    (ardentia-dashboard--switch-view 'completed)
+    (should (equal (sort (copy-sequence (ardentia-test--shown)) #'string<)
+                   '("Alpha" "Beta" "Eta" "Zeta")))
+    (ardentia-dashboard--switch-view 'dashboard)
+    ;; excluded tag, plus form
+    (ardentia-dashboard-filter-tags '("-humanreview"))
+    (should (equal (sort (copy-sequence (ardentia-test--shown)) #'string<)
+                   '("Delta" "Gamma")))
+    (ardentia-dashboard-filter-tags '("+aiready" "-nothing"))
+    (should (equal ardentia-dashboard--filter-tags '("aiready" "-nothing")))
+    (should (equal (sort (copy-sequence (ardentia-test--shown)) #'string<)
+                   '("Delta" "Gamma")))
+    ;; combined with title and host
+    (ardentia-dashboard-filter-title "^g")
+    (should (equal (ardentia-test--shown) '("Gamma")))
+    (ardentia-dashboard-filter-title "")
+    (ardentia-dashboard-filter-tags '("humanreview"))
+    (setq ardentia-dashboard--filter-host "beta")
+    (ardentia-dashboard--render)
+    (should (equal (ardentia-test--shown) '("Beta")))
+    (setq ardentia-dashboard--filter-host nil)
+    ;; header and parts
+    (ardentia-dashboard-filter-tags '("foo" "-bar"))
+    (should (equal (ardentia-dashboard--filter-parts) '("tags +foo -bar")))
+    (should (string-match-p "tags \\+foo -bar" (ardentia-test--header)))
+    (should (null (ardentia-test--shown)))
+    ;; empty input clears
+    (ardentia-dashboard-filter-tags nil)
+    (should (null ardentia-dashboard--filter-tags))
+    (should (null (ardentia-dashboard--filter-parts)))
+    (should (= (length (ardentia-test--shown)) 5))
+    ;; clear-filters resets it
+    (ardentia-dashboard-filter-tags '("foo"))
+    (ardentia-dashboard-clear-filters)
+    (should (null ardentia-dashboard--filter-tags))
+    (should (= (length (ardentia-test--shown)) 5))))
+
+(ert-deftest ardentia-test-list-tag-filter-merges ()
+  (ardentia-test--with-list
+    (setq ardentia--state
+          (list :tasks (ardentia-test--open-tasks) :host "alpha"
+                :merges (list (list :merge t :dir "/tmp/m1" :file "/tmp/m1"
+                                    :title "Merge one" :queue 'running))))
+    (ardentia-dashboard--render)
+    (should (member "Merge one" (ardentia-test--shown)))
+    (ardentia-dashboard-filter-tags '("aiready"))
+    (should-not (member "Merge one" (ardentia-test--shown)))
+    (ardentia-dashboard-filter-tags '("-aiready"))
+    (should (member "Merge one" (ardentia-test--shown)))))
 
 (ert-deftest ardentia-test-list-merges-follow-filters ()
   (ardentia-test--with-list
@@ -3667,6 +3736,9 @@ fetching and the hosts file are replaced by fixtures, the timer is boxed."
       (ardentia-dashboard-filter-title "x")
       (should (equal (funcall (funcall desc "h")) "Host: beta"))
       (should (equal (funcall (funcall desc "/")) "Title: /x/"))
+      (should (equal (funcall (funcall desc "\\")) "Tags: none"))
+      (ardentia-dashboard-filter-tags '("+foo" "-bar"))
+      (should (equal (funcall (funcall desc "\\")) "Tags: +foo -bar"))
       (should (equal (funcall (funcall desc "l")) "Later tasks: shown"))
       (should (equal (funcall (funcall desc "P")) "Period: all"))
       (should (equal (funcall (funcall desc "w")) "State: all"))

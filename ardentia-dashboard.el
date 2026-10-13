@@ -104,6 +104,11 @@ Keys, not rows: the buffer is printed anew on every refresh.")
 (defvar-local ardentia-dashboard--filter-title nil
   "Title filter of this buffer: a regexp string, or nil for no filter.")
 
+(defvar-local ardentia-dashboard--filter-tags nil
+  "Tag filter of this buffer: a list of tag specs, or nil for no filter.
+A spec is a tag the task must carry (\"foo\") or, prefixed with a minus,
+one it must not carry (\"-foo\").")
+
 (defvar-local ardentia-dashboard--period 'default
   "Period filter of the completed view, or `default' for the option.
 The option is `ardentia-completed-period'.")
@@ -624,6 +629,8 @@ from their defaults.  The result is nil when the view is unfiltered."
                 (format "host %s" ardentia-dashboard--filter-host))
            (and ardentia-dashboard--filter-title
                 (format "/%s/" ardentia-dashboard--filter-title))
+           (and ardentia-dashboard--filter-tags
+                (ardentia-dashboard--tags-text ardentia-dashboard--filter-tags))
            (and (eq view 'dashboard)
                 (not (eq (and (ardentia-dashboard--show-later-p) t)
                          (and ardentia-dashboard-show-later t)))
@@ -645,6 +652,35 @@ from their defaults.  The result is nil when the view is unfiltered."
       (let ((case-fold-search t))
         (string-match-p regexp (or title "")))))
 
+(defun ardentia-dashboard--normalize-tag-specs (specs)
+  "Return SPECS, tag filter entries, trimmed and without a leading plus.
+Empty entries are dropped, duplicates removed; a minus prefix stays."
+  (let (result)
+    (dolist (spec specs)
+      (let ((spec (string-trim spec)))
+        (when (string-prefix-p "+" spec)
+          (setq spec (string-trim-left (substring spec 1))))
+        (unless (member spec '("" "-"))
+          (push spec result))))
+    (seq-uniq (nreverse result))))
+
+(defun ardentia-dashboard--tags-text (specs)
+  "Return the tag filter SPECS as text, each required tag with a plus."
+  (concat "tags "
+          (mapconcat (lambda (spec)
+                       (if (string-prefix-p "-" spec) spec (concat "+" spec)))
+                     specs " ")))
+
+(defun ardentia-dashboard--tags-match-p (specs tags)
+  "Return non-nil when the task TAGS satisfy the filter SPECS.
+A spec \"foo\" needs the tag foo, \"-foo\" needs it absent.  The match
+is exact and case-sensitive, like org tags.  Nil SPECS match everything."
+  (seq-every-p (lambda (spec)
+                 (if (string-prefix-p "-" spec)
+                     (not (member (substring spec 1) tags))
+                   (member spec tags)))
+               specs))
+
 (defun ardentia-dashboard--task-host-name (task default-host)
   "Return the host TASK counts for in the host filter.
 That is `ardentia--task-host': the host that claimed the task (also for a
@@ -654,25 +690,32 @@ shows as \"default\"; it may be nil."
   (let ((host (ardentia--task-host task)))
     (if (and (equal host "default") default-host) default-host host)))
 
-(defun ardentia-dashboard--filter-tasks (tasks host title default-host)
-  "Return the TASKS that pass the HOST and TITLE filters.
-Either filter nil lets everything pass.  See
-`ardentia-dashboard--task-host-name' for DEFAULT-HOST."
-  (if (not (or host title))
+(defun ardentia-dashboard--filter-tasks (tasks host title default-host
+                                               &optional tags)
+  "Return the TASKS that pass the HOST, TITLE and TAGS filters.
+Any filter nil lets everything pass.  TAGS is a list of tag specs, see
+`ardentia-dashboard--tags-match-p'.  See `ardentia-dashboard--task-host-name'
+for DEFAULT-HOST."
+  (if (not (or host title tags))
       tasks
     (seq-filter (lambda (task)
                   (and (or (null host)
                            (equal host (ardentia-dashboard--task-host-name
                                         task default-host)))
                        (ardentia-dashboard--title-match-p
-                        title (plist-get task :title))))
+                        title (plist-get task :title))
+                       (ardentia-dashboard--tags-match-p
+                        tags (plist-get task :tags))))
                 tasks)))
 
-(defun ardentia-dashboard--filter-merges (merges host title local-host)
-  "Return the running MERGES that pass the HOST and TITLE filters.
-A merge runs on the local host, LOCAL-HOST."
+(defun ardentia-dashboard--filter-merges (merges host title local-host
+                                                &optional tags)
+  "Return the running MERGES that pass the HOST, TITLE and TAGS filters.
+A merge runs on the local host, LOCAL-HOST.  A merge has no tags, so it
+is hidden while TAGS require a tag and passes when TAGS only exclude."
   (seq-filter (lambda (merge)
                 (and (or (null host) (equal host local-host))
+                     (ardentia-dashboard--tags-match-p tags nil)
                      (ardentia-dashboard--title-match-p
                       title (plist-get merge :title))))
               merges))
@@ -738,6 +781,7 @@ TODO state and priority work like in org-agenda."
     ("f" "Filter menu" ardentia-dashboard-filter-menu)
     ("h" "Cycle host" ardentia-dashboard-cycle-host)
     ("/" "Title regexp" ardentia-dashboard-filter-title)
+    ("\\" "Tags (+tag, -tag)" ardentia-dashboard-filter-tags)
     ("l" "Toggle later (Dashboard)" ardentia-dashboard-toggle-later)
     ("P" "Cycle period (Completed)" ardentia-dashboard-cycle-period)
     ("w" "Cycle state (Completed)" ardentia-dashboard-cycle-state)))
@@ -862,11 +906,12 @@ in every render.  A new format resets the sort key."
 In the completed view also record the totals for the header line."
   (let* ((host ardentia-dashboard--filter-host)
          (title ardentia-dashboard--filter-title)
+         (tags ardentia-dashboard--filter-tags)
          (default-host (and host (ardentia-dashboard--default-host))))
     (if (eq view 'completed)
         (let* ((tasks (ardentia-dashboard--filter-tasks
                        ardentia-dashboard--completed-tasks
-                       host title default-host))
+                       host title default-host tags))
                (period (ardentia-dashboard--period-now))
                (state ardentia-dashboard--state-filter))
           (setq ardentia-dashboard--completed-summary
@@ -877,14 +922,14 @@ In the completed view also record the totals for the header line."
             (dashboard (eq view 'dashboard)))
         (ardentia-dashboard--entries
          (ardentia-dashboard--filter-tasks
-          (plist-get ardentia--state :tasks) host title default-host)
+          (plist-get ardentia--state :tasks) host title default-host tags)
          (and (eq view 'review) 'review)
          now
          (and dashboard (not (ardentia-dashboard--show-later-p)))
          (and dashboard
               (ardentia-dashboard--filter-merges
                (plist-get ardentia--state :merges)
-               host title (plist-get ardentia--state :host))))))))
+               host title (plist-get ardentia--state :host) tags)))))))
 
 (defun ardentia-dashboard--goto-key (key)
   "Move point to the row with the row KEY; return nil and stay when none."
@@ -1464,6 +1509,35 @@ An empty REGEXP clears the filter."
            (if ardentia-dashboard--filter-title
                (format "/%s/" ardentia-dashboard--filter-title) "none")))
 
+(defun ardentia-dashboard-filter-tags (specs)
+  "Show only the tasks that match the tag filter SPECS.
+SPECS is a list of strings: a tag (or +tag) the task must carry, or
+-tag for one it must not carry; all must hold.  Matching is exact and
+case-sensitive.  An empty list clears the filter.  Running merges have
+no tags, so they are hidden while a tag is required and stay when SPECS
+only exclude."
+  (interactive
+   (list (completing-read-multiple
+          "Tags (tag, -tag; empty clears): "
+          (let ((tags (ardentia-dashboard--tag-candidates
+                       (append (plist-get ardentia--state :tasks)
+                               ardentia-dashboard--completed-tasks))))
+            (append tags (mapcar (lambda (tag) (concat "-" tag)) tags)))
+          nil nil
+          (and ardentia-dashboard--filter-tags
+               (string-join ardentia-dashboard--filter-tags ",")))))
+  (setq ardentia-dashboard--filter-tags
+        (ardentia-dashboard--normalize-tag-specs specs))
+  (ardentia-dashboard--render)
+  (message "Tag filter: %s"
+           (if ardentia-dashboard--filter-tags
+               (string-join (mapcar (lambda (spec)
+                                      (if (string-prefix-p "-" spec)
+                                          spec (concat "+" spec)))
+                                    ardentia-dashboard--filter-tags)
+                            " ")
+             "none")))
+
 (defun ardentia-dashboard-cycle-period ()
   "Cycle the period filter: all, last 30 days, last 7 days, today.
 A filter of the completed view."
@@ -1491,6 +1565,7 @@ A filter of the completed view."
   (interactive)
   (setq ardentia-dashboard--filter-host nil
         ardentia-dashboard--filter-title nil
+        ardentia-dashboard--filter-tags nil
         ardentia-dashboard--show-later 'default
         ardentia-dashboard--period 'default
         ardentia-dashboard--state-filter 'all)
@@ -1544,6 +1619,16 @@ greyed out."
                                (if ardentia-dashboard--filter-title
                                    (format "/%s/" ardentia-dashboard--filter-title)
                                  "none"))))
+     :transient t)
+    ("\\" ardentia-dashboard-filter-tags
+     :description (lambda ()
+                    (ardentia-dashboard--menu-text
+                     "Tags" (lambda ()
+                              (if ardentia-dashboard--filter-tags
+                                  (substring (ardentia-dashboard--tags-text
+                                              ardentia-dashboard--filter-tags)
+                                             5)
+                                "none"))))
      :transient t)]
    ["Dashboard view"
     ("l" ardentia-dashboard-toggle-later

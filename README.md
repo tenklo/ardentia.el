@@ -160,6 +160,10 @@ remembers the row you were on.
 Filters (they show in the header line while not at their default):
 - `h` host: cycles all, this computer, the other hosts of `ardentia-hosts`
 - `/` title regexp (case-insensitive; empty input clears it)
+- `\` tags: completes over the tags in the list; `tag` (or `+tag`) must be
+  carried, `-tag` must not be (all must hold, exact and case-sensitive; empty
+  input clears it); running merges have no tags and are hidden while a tag is
+  required
 - `l` later tasks shown or hidden (dashboard view only)
 - `P` period: all, last 30 days, last 7 days, today (completed view only;
   by `AI_SESSION`, so tasks without it only show under all)
