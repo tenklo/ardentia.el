@@ -746,7 +746,7 @@ TODO state and priority work like in org-agenda."
     ("t" "Transcript" ardentia-dashboard-transcript)
     ("A" "Agent shell" ardentia-dashboard-agent-shell))
    ("Review and run"
-    ("a" "Accept" ardentia-dashboard-accept)
+    ("a" "Accept (marked)" ardentia-dashboard-accept)
     ("s" "Send back" ardentia-dashboard-send-back)
     ("x" "Run now" ardentia-dashboard-run)
     ("k" "Stop" ardentia-dashboard-stop))
@@ -1398,33 +1398,70 @@ unknown KEY."
           (lambda (_task) (org-priority action))))
     (_ (user-error "Unknown bulk action `%s'" (single-key-description key)))))
 
+(defun ardentia-dashboard--clear-marks ()
+  "Unmark all tasks, unless `org-agenda-persistent-marks' is set."
+  (unless (bound-and-true-p org-agenda-persistent-marks)
+    (setq ardentia-dashboard--marked nil)
+    (tabulated-list-clear-all-tags)))
+
+(defun ardentia-dashboard--report-bulk (result &optional extra-skipped extra-reason)
+  "Show the message for the bulk edit RESULT.
+EXTRA-SKIPPED tasks were left out before the edit, for EXTRA-REASON."
+  (let ((reason (or extra-reason (plist-get result :reason))))
+    (message "Bulk: %d done, %d skipped%s"
+             (plist-get result :done)
+             (+ (plist-get result :skipped) (or extra-skipped 0))
+             (if reason (format " (%s)" reason) ""))))
+
+(defun ardentia-dashboard--bulk-accept (tasks)
+  "Accept those of the marked TASKS that wait for review (set DONE).
+Tasks that are not waiting for review, or are accepted already, are
+skipped.  Ask once for confirmation; when declined change nothing and
+keep the marks.  Afterwards clear the marks like the other bulk actions."
+  (let* ((open (seq-filter (lambda (task)
+                             (and (eq (plist-get task :queue) 'review)
+                                  (not (plist-get task :done))))
+                           tasks))
+         (left-out (- (length tasks) (length open)))
+         (reason (and (> left-out 0) "not waiting for review")))
+    (cond
+     ((null open)
+      (ardentia-dashboard--report-bulk (list :done 0 :skipped 0)
+                                       left-out reason))
+     ((y-or-n-p (format "Accept %d task%s (set DONE)? "
+                        (length open) (if (cdr open) "s" "")))
+      (ardentia-dashboard--clear-marks)
+      (ardentia-dashboard--report-bulk
+       (ardentia--without-logging
+         (ardentia-bulk-edit open (lambda (_task) (org-todo "DONE"))))
+       left-out reason)))))
+
 (defun ardentia-dashboard-bulk-action (&optional arg)
   "Apply an action to all marked tasks, like `org-agenda-bulk-action'.
 The key asked for is one of
   +  add a tag                 -  remove a tag
   s  schedule                  d  set the deadline
   t  change the TODO state     ,  set the priority
+  a  accept (set DONE) the tasks waiting for review, after one confirmation
 What the action needs is asked for once.  With a prefix ARG, `s' and `d'
 remove the schedule or deadline.  A task that cannot be changed is
-skipped.  Org writes no log entries or notes in a bulk action.  Afterwards
-all tasks are unmarked, unless `org-agenda-persistent-marks' is set."
+skipped; with `a' so is every marked task that is not waiting for review.
+Org writes no log entries or notes in a bulk action.  Afterwards
+all tasks are unmarked, unless `org-agenda-persistent-marks' is set;
+a declined `a' keeps the marks."
   (interactive "P")
   (let ((tasks (ardentia-dashboard--marked-tasks)))
     (unless tasks (user-error "No task is marked"))
-    (let* ((key (read-char-exclusive
-                 (format "Bulk action on %d task%s: [+]tag [-]untag [s]chedule [d]eadline [t]odo [,]priority "
-                         (length tasks) (if (cdr tasks) "s" ""))))
-           (fn (ardentia-dashboard--bulk-function key arg tasks)))
-      (unless (bound-and-true-p org-agenda-persistent-marks)
-        (setq ardentia-dashboard--marked nil)
-        (tabulated-list-clear-all-tags))
-      (let ((result (ardentia--without-logging
-                      (ardentia-bulk-edit tasks fn))))
-        (message "Bulk: %d done, %d skipped%s"
-                 (plist-get result :done) (plist-get result :skipped)
-                 (if (plist-get result :reason)
-                     (format " (%s)" (plist-get result :reason))
-                   ""))))))
+    (let ((key (read-char-exclusive
+                (format "Bulk action on %d task%s: [+]tag [-]untag [s]chedule [d]eadline [t]odo [,]priority [a]ccept "
+                        (length tasks) (if (cdr tasks) "s" "")))))
+      (if (eq key ?a)
+          (ardentia-dashboard--bulk-accept tasks)
+        (let ((fn (ardentia-dashboard--bulk-function key arg tasks)))
+          (ardentia-dashboard--clear-marks)
+          (ardentia-dashboard--report-bulk
+           (ardentia--without-logging
+             (ardentia-bulk-edit tasks fn))))))))
 
 (defun ardentia-dashboard-review ()
   "Open the review buffer of the task at point."
@@ -1697,9 +1734,13 @@ An accepted (done) task of the completed view is refused."
     task))
 
 (defun ardentia-dashboard-accept ()
-  "Accept the review task at point."
+  "Accept the review task at point.
+When tasks are marked, accept the marked tasks instead, like
+`ardentia-dashboard-bulk-action' with `a'."
   (interactive)
-  (ardentia-accept (ardentia-dashboard--require-open-review-task)))
+  (if-let* ((tasks (ardentia-dashboard--marked-tasks)))
+      (ardentia-dashboard--bulk-accept tasks)
+    (ardentia-accept (ardentia-dashboard--require-open-review-task))))
 
 (defun ardentia-dashboard-send-back ()
   "Send the review task at point back to the agents."

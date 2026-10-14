@@ -140,7 +140,7 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-dashboard-priority-up` / `-down` | Dashboard: raise or lower that priority |
 | `ardentia-dashboard-mark`, `-unmark`, `-unmark-all`, `-mark-toggle`, `-mark-all`, `-mark-toggle-all`, `-mark-regexp` | Dashboard: marks, like org-agenda's bulk marks |
 | `ardentia-dashboard-set-tags`, `-schedule`, `-deadline`, `-todo` | Dashboard: org-agenda's tag, schedule, deadline and TODO state commands on the task at point |
-| `ardentia-dashboard-bulk-action` | Dashboard: apply tag, schedule, deadline, TODO state or priority to all marked tasks |
+| `ardentia-dashboard-bulk-action` | Dashboard: apply tag, schedule, deadline, TODO state or priority to all marked tasks, or accept the marked review tasks |
 | `ardentia-review-set-tags`, `-schedule`, `-deadline`, `-todo`, `-priority`, `-priority-up`, `-priority-down` | Review buffer: the same edits on the reviewed task |
 | `ardentia-dashboard-menu`, `ardentia-review-menu`, `ardentia-knowledge-menu`, `ardentia-agents-menu`, `ardentia-session-menu` | `?` in the respective buffer: transient menu listing every key of that buffer (the task list: groups View and Filter among them), grouped, under the same key; `.` opens `ardentia` (also directly in every buffer) |
 
@@ -186,7 +186,7 @@ raise/lower it (every task row),
 (also on freshly captured tasks that have no `:ID:` yet: the heading is
 found by its line or, failing that, by its unique title; `x` creates the
 ID and saves the file first),
-`a` accept, `s` send back (both refuse a task that is already accepted),
+`a` accept (the marked tasks when any are marked, like `B a`), `s` send back (both refuse a task that is already accepted),
 `d` toggle the due flag between time left and due date, `x` run the ready
 or later task now, `k` stop the running task at point, `$` fetch the usage now,
 `S` sort by column, `q` quit, `?` menu of all keys of this buffer
@@ -207,7 +207,10 @@ Marks and edits work like in org-agenda:
   - a log note that org asks for is stored and the file saved afterwards
   - the heading must still carry the lifecycle tag the row was listed under
 - `B` applies an action to the marked tasks: `+` add a tag, `-` remove a
-  tag, `s` schedule, `d` deadline, `t` TODO state, `,` priority
+  tag, `s` schedule, `d` deadline, `t` TODO state, `,` priority, `a` accept
+  - `a` sets DONE on the marked tasks that wait for review after one
+    confirmation naming the count; other marked tasks are skipped ("not
+    waiting for review"); a declined confirmation keeps the marks
   - what the action needs is asked for once; `C-u B` with `s` or `d` removes
   - every file is saved once, the lists are refreshed once
   - a task that cannot be changed is skipped; the message reads

@@ -4874,6 +4874,69 @@ COUNTS is a variable bound to a cons (SAVES . REFRESHES)."
     (should (= (car counts) 2))
     (should (= (cdr counts) 1))))
 
+(ert-deftest ardentia-test-bulk-accept-sets-done-and-skips ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (ardentia-test--goto "Alpha") (ardentia-dashboard-mark)
+    (ardentia-test--goto "Beta") (ardentia-dashboard-mark)
+    (let (asked msg)
+      (cl-letf (((symbol-function 'y-or-n-p)
+                 (lambda (prompt) (setq asked prompt) t))
+                ((symbol-function 'message)
+                 (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+        (ardentia-test--bulk ?a))
+      (should (equal asked "Accept 1 task (set DONE)? "))
+      (should (equal msg "Bulk: 1 done, 1 skipped (not waiting for review)")))
+    (should (string-match-p "^\\* DONE Beta :humanreview:$"
+                            (ardentia-test--file-text f1)))
+    (should (string-match-p "^\\* TODO Alpha :aiready:$"
+                            (ardentia-test--file-text f1)))
+    (should (= (car counts) 1))
+    (should (= (cdr counts) 1))
+    (should-not ardentia-dashboard--marked)))
+
+(ert-deftest ardentia-test-bulk-accept-skips-accepted-task ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (let ((done (append (list :done t)
+                        (ardentia-test--edit-task "Beta" 'review f1 "ed-2"))))
+      (setq ardentia-dashboard--marked (list (ardentia--task-key done)))
+      (cl-letf (((symbol-function 'ardentia-dashboard--marked-tasks)
+                 (lambda () (list done)))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (&rest _) (ert-fail "must not ask"))))
+        (ardentia-test--bulk ?a))
+      (should-not (string-match-p "DONE" (ardentia-test--file-text f1))))))
+
+(ert-deftest ardentia-test-bulk-accept-declined-changes-nothing ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (ardentia-test--goto "Beta") (ardentia-dashboard-mark)
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
+      (ardentia-test--bulk ?a))
+    (should (string-match-p "^\\* TODO Beta" (ardentia-test--file-text f1)))
+    (should (= (car counts) 0))
+    (should (equal (ardentia-test--marked-titles) '("Beta")))))
+
+(ert-deftest ardentia-test-accept-with-marks-goes-bulk ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (ardentia-test--goto "Beta") (ardentia-dashboard-mark)
+    (ardentia-test--goto "Alpha")
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+              ((symbol-function 'ardentia-accept-1)
+               (lambda (&rest _) (ert-fail "must not accept singly"))))
+      (ardentia-dashboard-accept))
+    (should (string-match-p "^\\* DONE Beta :humanreview:$"
+                            (ardentia-test--file-text f1)))
+    (should-not ardentia-dashboard--marked)))
+
+(ert-deftest ardentia-test-accept-without-marks-is-single ()
+  (ardentia-test--with-edit-list f1 f2 counts
+    (let (accepted)
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                ((symbol-function 'ardentia-accept-1)
+                 (lambda (file id) (setq accepted (list file id)))))
+        (ardentia-test--goto "Beta")
+        (ardentia-dashboard-accept))
+      (should (equal accepted (list f1 "ed-2"))))))
+
 ;;;; Org integration in the review buffer
 
 (ert-deftest ardentia-test-review-keys-beat-org ()
