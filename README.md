@@ -26,7 +26,10 @@ below; the test suite ships a fake `org-tool` that shows it in a few lines.
 :humanreview:      the runner writes a run report and hands it back to you
 ```
 
-Accept sets the task to DONE. Send back replaces `humanreview` by
+Accept sets the task to DONE. When org refuses DONE (an open child TODO
+under `org-enforce-todo-dependencies`, open checkboxes), accept says so,
+names the blocker and leaves the task and the review buffer as they
+were; a bulk accept counts such a task as skipped. Send back replaces `humanreview` by
 `aiready` and adds your note. A task can be bound to one computer with a
 tag `NAME_only`.
 

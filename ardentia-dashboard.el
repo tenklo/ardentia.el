@@ -1433,7 +1433,7 @@ keep the marks.  Afterwards clear the marks like the other bulk actions."
       (ardentia-dashboard--clear-marks)
       (ardentia-dashboard--report-bulk
        (ardentia--without-logging
-         (ardentia-bulk-edit open (lambda (_task) (org-todo "DONE"))))
+         (ardentia-bulk-edit open (lambda (_task) (ardentia--set-done))))
        left-out reason)))))
 
 (defun ardentia-dashboard-bulk-action (&optional arg)

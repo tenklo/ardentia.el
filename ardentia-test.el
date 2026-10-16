@@ -1183,6 +1183,95 @@ Text
     (let ((err (should-error (ardentia-accept-1 f "id-one") :type 'user-error)))
       (should (string-match-p "unsaved changes" (cadr err))))))
 
+(defconst ardentia-test--org-blocked
+  "* TODO Parent :humanreview:
+:PROPERTIES:
+:ID:       id-parent
+:END:
+** TODO Open child
+* TODO Boxes :humanreview:
+:PROPERTIES:
+:ID:       id-boxes
+:END:
+- [ ] not ticked
+* TODO Repeating :humanreview:
+SCHEDULED: <2026-10-16 Fri +1w>
+:PROPERTIES:
+:ID:       id-repeat
+:END:
+"
+  "Review tasks org refuses to set DONE, and one that repeats.")
+
+(defmacro ardentia-test--with-blocking (&rest body)
+  "Run BODY with the dependency blockers of the human's setup."
+  (declare (indent 0))
+  `(let ((org-enforce-todo-dependencies t)
+         (org-enforce-todo-checkbox-dependencies t)
+         (org-blocker-hook '(org-block-todo-from-children-or-siblings-or-parent
+                             org-block-todo-from-checkboxes)))
+     ,@body))
+
+(ert-deftest ardentia-test-accept-refused-by-open-child ()
+  (ardentia-test--with-org-file f ardentia-test--org-blocked
+    (ardentia-test--with-blocking
+      (let ((err (should-error (ardentia-accept-1 f "id-parent")
+                               :type 'user-error)))
+        (should (equal (cadr err)
+                       "Not accepted: org refuses DONE for \"Parent\" (blocked by \"TODO Open child\")")))
+      (should (string-match-p "^\\* TODO Parent :humanreview:$"
+                              (ardentia-test--file-text f)))
+      (should-not (buffer-modified-p (find-buffer-visiting f))))))
+
+(ert-deftest ardentia-test-accept-refused-by-checkboxes ()
+  (ardentia-test--with-org-file f ardentia-test--org-blocked
+    (ardentia-test--with-blocking
+      (let ((err (should-error (ardentia-accept-1 f "id-boxes")
+                               :type 'user-error)))
+        (should (string-match-p "blocked by open checkboxes" (cadr err)))))))
+
+(ert-deftest ardentia-test-accept-refused-when-state-stays ()
+  ;; A refusal that bypasses `org-blocker-hook' is caught after the fact.
+  (ardentia-test--with-org-file f ardentia-test--org-blocked
+    (cl-letf (((symbol-function 'org-todo) #'ignore))
+      (let ((err (should-error (ardentia-accept-1 f "id-boxes")
+                               :type 'user-error)))
+        (should (equal (cadr err)
+                       "Not accepted: org did not set \"Boxes\" to DONE"))))))
+
+(ert-deftest ardentia-test-accept-repeating-task ()
+  (ardentia-test--with-org-file f ardentia-test--org-blocked
+    (ardentia-test--with-blocking
+      (ardentia-accept-1 f "id-repeat")
+      (should (string-match-p "SCHEDULED: <2026-10-23 Fri \\+1w>"
+                              (ardentia-test--file-text f))))))
+
+(ert-deftest ardentia-test-review-accept-keeps-buffer-when-refused ()
+  (let (quit)
+    (with-temp-buffer
+      (setq-local ardentia-review--task '(:file "/o/x.org" :id "id-x" :title "X"))
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                ((symbol-function 'ardentia-accept-1)
+                 (lambda (&rest _) (user-error "Not accepted: org refuses DONE")))
+                ((symbol-function 'quit-window)
+                 (lambda (&rest _) (setq quit t))))
+        (should-error (ardentia-review-accept) :type 'user-error)))
+    (should-not quit)))
+
+(ert-deftest ardentia-test-bulk-accept-skips-blocked-task ()
+  (ardentia-test--with-org-file f ardentia-test--org-blocked
+    (ardentia-test--with-blocking
+      (let ((result
+             (ardentia--without-logging
+               (ardentia-bulk-edit
+                (list (list :file f :id "id-parent" :tags '("humanreview"))
+                      (list :file f :id "id-boxes" :tags '("humanreview")))
+                (lambda (_task) (ardentia--set-done))))))
+        (should (= (plist-get result :done) 0))
+        (should (= (plist-get result :skipped) 2))
+        (should (string-match-p "blocked by \"TODO Open child\""
+                                (plist-get result :reason))))
+      (should-not (string-match-p "DONE" (ardentia-test--file-text f))))))
+
 ;;;; Capture
 
 (ert-deftest ardentia-test-capture-template ()

@@ -246,11 +246,41 @@ The format matches the notes org writes itself."
 
 ;;;; Public actions (non-interactive cores)
 
+(defvar org-blocked-by-checkboxes)
+
+(defun ardentia--set-done ()
+  "Set the heading at point to DONE or signal a `user-error' saying why not.
+Called from code, `org-todo' refuses a blocked change silently (an open
+child TODO under `org-enforce-todo-dependencies', open checkboxes): it
+only echoes a message and leaves the state as it was.  So ask
+`org-blocker-hook' first, like `org-todo' does, and check the state
+afterwards; a repeating task that goes back to TODO counts as done."
+  (let* ((title (org-get-heading t t t t))
+         (org-block-entry-blocking "")
+         (org-blocked-by-checkboxes nil)
+         (change (list :type 'todo-state-change :from (org-get-todo-state)
+                       :to "DONE" :position (point))))
+    (unless (save-excursion
+              (save-match-data
+                (org-with-wide-buffer
+                 (run-hook-with-args-until-failure 'org-blocker-hook change))))
+      (user-error "Not accepted: org refuses DONE for \"%s\" (blocked by %s)"
+                  title
+                  (if org-blocked-by-checkboxes
+                      "open checkboxes"
+                    (format "\"%s\"" org-block-entry-blocking))))
+    (org-todo "DONE")
+    (unless (or (member (org-get-todo-state) org-done-keywords)
+                (org-get-repeat))
+      (user-error "Not accepted: org did not set \"%s\" to DONE" title))))
+
 (defun ardentia-accept-1 (file id)
-  "Set the task ID in FILE to DONE.  The humanreview tag stays."
+  "Set the task ID in FILE to DONE.  The humanreview tag stays.
+Signal a `user-error' naming the reason when org refuses DONE, see
+`ardentia--set-done'; the review buffer then stays open."
   (ardentia--call-on-heading
    file id nil "humanreview"
-   (lambda () (org-todo "DONE"))))
+   #'ardentia--set-done))
 
 (defun ardentia-send-back-1 (file id note)
   "Send the task ID in FILE back to the agents with NOTE.
