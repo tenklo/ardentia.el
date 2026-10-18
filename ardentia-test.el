@@ -857,6 +857,65 @@ Text
       (should (string-match-p "^- Status :: TODO, agents: completed$" text))
       (should (string-match-p "Original task text" text)))))
 
+(defconst ardentia-test--org-sections
+  "* TODO Task sec :humanreview:
+:PROPERTIES:
+:ID:       id-task
+:END:
+** Result Sec
+SCHEDULED: <2026-10-16 Fri>
+:PROPERTIES:
+:ID:       id-sec
+:END:
+First body line
+Second body line
+*** Sub heading
+:LOGBOOK:
+- Note taken on [2026-10-10 Sat 19:53] \\\\
+  hidden note
+:END:
+Sub body line
+** TODO Open one :humanreview:
+"
+  "Org fixture with a result section that has sub-headings and drawers.")
+
+(ert-deftest ardentia-test-section-content ()
+  (should (equal (ardentia--section-content
+                  "\n:PROPERTIES:\n:ID: x\n:END:\nbody\n*** Sub\nSCHEDULED: <2026-10-16 Fri>\ntext\n**** Deep\n:LOGBOOK:\n- n\n:END:\nmore\n\n\n"
+                  2 3)
+                 '("body" "**** Sub" "text" "***** Deep" "more")))
+  (should (equal (ardentia--section-content "DEADLINE: <2026-10-16 Fri>\nx\n" 2 3)
+                 '("x")))
+  (should (null (ardentia--section-content "" 2 3)))
+  (should (null (ardentia--section-content nil 2 3)))
+  (should (null (ardentia--section-content "\n:PROPERTIES:\n:ID: x\n:END:\n\n" 2 3))))
+
+(ert-deftest ardentia-test-review-render-section-content ()
+  (ardentia-test--with-org-file f ardentia-test--org-sections
+    (let* ((info (ardentia-review--collect f "id-task"))
+           (text (ardentia-review--render-string info)))
+      (should (string-match-p "^\\*\\*\\* \\[\\[id:id-sec\\]\\[Result Sec\\]\\]$" text))
+      (should (string-match-p "^First body line$" text))
+      (should (string-match-p "^Second body line$" text))
+      (should (string-match-p "^\\*\\*\\*\\* Sub heading$" text))
+      (should (string-match-p "^Sub body line$" text))
+      (should-not (string-match-p ":PROPERTIES:\\|:ID:\\|:LOGBOOK:\\|hidden note\\|SCHEDULED" text))
+      (should (string-match-p "^\\*\\* For you$" text))
+      (should (equal (mapcar (lambda (c) (plist-get c :title)) (plist-get info :for-you))
+                     '("Open one"))))))
+
+(ert-deftest ardentia-test-review-buffer-default-directory ()
+  (ardentia-test--with-org-file f ardentia-test--org
+    (let (buf)
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) (setq buf b))))
+        (ardentia-review-task (list :file f :id "id-one" :title "Task one")))
+      (unwind-protect
+          (with-current-buffer buf
+            (should (equal (file-name-as-directory default-directory)
+                           (file-name-as-directory
+                            (file-name-directory (expand-file-name f))))))
+        (kill-buffer buf)))))
+
 (ert-deftest ardentia-test-review-collect-priority ()
   (ardentia-test--with-org-file f "* DONE [#B] Prio task :humanreview:
 :PROPERTIES:

@@ -104,7 +104,9 @@ were finished before the runner wrote them simply have none; ardentia
 then shows empty cells, never 0. A run report is an item at the top
 of the `:LOGBOOK:` drawer that starts with `- AI-Lauf [TIMESTAMP]`; the
 review buffer shows the newest one and the `- Note taken on` items above
-it.
+it. Child headings without a TODO keyword (result sections) are shown
+with their content under `Result sections`: drawers and planning lines
+are left out and their sub-headings nest below the section.
 
 ## Install
 
@@ -128,7 +130,7 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-completed`     | The same buffer in its completed view: all tasks handed back, accepted or not, with tokens and cost |
 | `ardentia-knowledge`     | Read-only list of the knowledge files in `*ardentia knowledge*`; large files are grepped, not opened |
 | `ardentia-agents`        | Read-only list of the agent definitions with model, tools and limits in `*ardentia agents*` |
-| `ardentia-review-task`   | Read-only org view of one task (run report, notes, child sections) |
+| `ardentia-review-task`   | Read-only org view of one task (run report, notes, result sections with their content, open child tasks) |
 | `ardentia-session-open` | Read-only, live-following transcript of the agent session of a task |
 | `ardentia-session-open-agent-shell` | Resume that session in `agent-shell` (optional package) |
 | `ardentia-new-task`      | Capture a new `:aiready:` task (asks for the host)   |

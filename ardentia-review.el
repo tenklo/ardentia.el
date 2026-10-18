@@ -28,8 +28,9 @@
 ;; `ardentia-review-task' shows one :humanreview: task in a read-only org
 ;; buffer: the TODO state and priority, properties, the newest run
 ;; report from the LOGBOOK, the notes the human wrote after it, the child
-;; headings (result sections and open TODOs "for you") and the original
-;; task text.  Everything is read
+;; headings (result sections with their content, and open TODOs "for
+;; you") and the original task text.  The buffer's `default-directory'
+;; is the task file's directory, so relative file links in sections work.  Everything is read
 ;; from the visiting buffer, not from disk.
 ;;
 ;; `z' or `C-c C-z' (`ardentia-review-add-note') opens org's note window
@@ -158,7 +159,51 @@ Return a plist: :results, the children without TODO keyword, and
           :for-you (append (seq-remove (lambda (c) (plist-get c :done)) todos)
                            (seq-filter (lambda (c) (plist-get c :done)) todos)))))
 
+;;;; Result section content
+
+(defun ardentia--section-content (content child-level target-level)
+  "Return the lines of CONTENT, a result section's subtree text, to render.
+CHILD-LEVEL is the org level of the section heading, TARGET-LEVEL the
+level it gets in the review buffer.  Property and LOGBOOK drawers and
+planning lines directly under a heading are dropped, a heading of
+level L becomes level TARGET-LEVEL + (L - CHILD-LEVEL), and leading
+and trailing blank lines are trimmed.  Return nil when nothing is left."
+  (let (out in-drawer (after-heading t))
+    (dolist (line (and content (split-string content "\n")))
+      (cond
+       (in-drawer (when (string-match-p "\\`[ \t]*:END:[ \t]*\\'" line)
+                    (setq in-drawer nil)))
+       ((string-match-p "\\`[ \t]*:\\(PROPERTIES\\|LOGBOOK\\):[ \t]*\\'" line)
+        (setq in-drawer t))
+       ((and after-heading
+             (string-match-p
+              "\\`[ \t]*\\(SCHEDULED\\|DEADLINE\\|CLOSED\\):" line)))
+       ((string-match "\\`\\(\\*+\\)\\( .*\\)?\\'" line)
+        (push (concat (make-string
+                       (max 1 (+ target-level
+                                 (- (length (match-string 1 line)) child-level)))
+                       ?*)
+                      (or (match-string 2 line) ""))
+              out)
+        (setq after-heading t))
+       (t (push line out)
+          (setq after-heading nil))))
+    (setq out (nreverse out))
+    (while (and out (string-blank-p (car out))) (pop out))
+    (setq out (nreverse out))
+    (while (and out (string-blank-p (car out))) (pop out))
+    (nreverse out)))
+
 ;;;; Collecting from the visiting buffer
+
+(defun ardentia-review--subtree-content ()
+  "Return the text of the subtree at point after its heading line."
+  (save-excursion
+    (let ((end (save-excursion (org-end-of-subtree t t) (point))))
+      (forward-line 1)
+      (if (< (point) end)
+          (buffer-substring-no-properties (point) end)
+        ""))))
 
 (defun ardentia-review--children ()
   "Return the direct children of the heading at point as plists."
@@ -169,11 +214,15 @@ Return a plist: :results, the children without TODO keyword, and
           (while more
             (when (= (org-current-level) (1+ level))
               (let ((todo (org-get-todo-state)))
-                (push (list :title (org-get-heading t t t t)
-                            :todo todo
-                            :done (and todo (member todo org-done-keywords) t)
-                            :tags (org-get-tags nil t)
-                            :id (org-entry-get nil "ID"))
+                (push (append
+                       (list :title (org-get-heading t t t t)
+                             :todo todo
+                             :done (and todo (member todo org-done-keywords) t)
+                             :tags (org-get-tags nil t)
+                             :id (org-entry-get nil "ID"))
+                       (unless todo
+                         (list :level (org-current-level)
+                               :content (ardentia-review--subtree-content))))
                       result)))
             (setq more (org-get-next-sibling))))))
     (nreverse result)))
@@ -282,7 +331,10 @@ and AI_SESSION).  Any error gives nil and is not cached."
     (insert "** Result sections\n")
     (if (plist-get info :results)
         (dolist (c (plist-get info :results))
-          (insert "- " (ardentia-review--link c) "\n"))
+          (insert "*** " (ardentia-review--link c) "\n")
+          (dolist (l (ardentia--section-content
+                      (plist-get c :content) (or (plist-get c :level) 2) 3))
+            (insert l "\n")))
       (insert "- none\n"))
     (insert "** For you\n")
     (if (plist-get info :for-you)
@@ -389,6 +441,9 @@ Also bound: C-c C-q (tags), S-<up> and S-<down> (priority up and down)."
       (unless (derived-mode-p 'ardentia-review-mode) (ardentia-review-mode))
       (setq-local truncate-lines ardentia-review-truncate-lines)
       (setq-local word-wrap (not ardentia-review-truncate-lines))
+      (when (plist-get task :file)
+        (setq default-directory
+              (file-name-directory (expand-file-name (plist-get task :file)))))
       (setq ardentia-review--task
             (list :file (plist-get task :file) :id (plist-get task :id)
                   :title title))
