@@ -30,8 +30,8 @@
 ;; report from the LOGBOOK, the notes the human wrote after it, the child
 ;; headings (result sections with their content, and open TODOs "for
 ;; you") and the original task text.  The buffer's `default-directory'
-;; is the task file's directory, so relative file links in sections work.  Everything is read
-;; from the visiting buffer, not from disk.
+;; is the task file's directory, so relative file links in sections
+;; work.  Everything is read from the visiting buffer, not from disk.
 ;;
 ;; `z' or `C-c C-z' (`ardentia-review-add-note') opens org's note window
 ;; for the reviewed task.  `C-c C-c' stores the note in the LOGBOOK of
