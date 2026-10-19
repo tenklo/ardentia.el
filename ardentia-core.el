@@ -189,6 +189,20 @@ Signal an error when STRING is not valid JSON."
           ((stringp v) v)
           (t (format "%s" v)))))
 
+;; `org-tool find-tagged' reports "parent" (the direct parent heading) and
+;; "outline" (its ancestor titles).  Both are absent from older org-tool
+;; versions; the dashboard then has nothing to group by.
+(defun ardentia--parent-from-json (parent)
+  "Return the plist (:line :level :title :id) for the decoded PARENT, or nil.
+PARENT is the \"parent\" object of an `org-tool' element; nil, \"null\"
+and anything that is no object give nil."
+  (let ((parent (ardentia--val parent)))
+    (when (and (consp parent) (consp (car parent)))
+      (list :line (alist-get 'line parent)
+            :level (alist-get 'level parent)
+            :title (or (ardentia--stringify (alist-get 'title parent)) "")
+            :id (ardentia--stringify (alist-get 'id parent))))))
+
 (defun ardentia--task-from-json (alist &optional keep-done)
   "Convert one decoded `org-tool' element ALIST into a task plist.
 Return nil when the element is done, unless KEEP-DONE is non-nil.  The
@@ -213,6 +227,10 @@ plist then also carries `:done', non-nil for a done element."
             :deadline (ardentia--stringify (alist-get 'deadline alist))
             :created (ardentia--stringify (alist-get 'created alist))
             :props props
+            :parent (ardentia--parent-from-json (alist-get 'parent alist))
+            :outline (let ((outline (ardentia--val (alist-get 'outline alist))))
+                       (and (listp outline)
+                            (mapcar #'ardentia--stringify outline)))
             :queue (ardentia--tag-queue tags)
             :trouble (ardentia--tag-trouble tags)))))
 

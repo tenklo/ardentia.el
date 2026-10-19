@@ -43,6 +43,14 @@
 ;; view switches and apply where they make sense; `f' shows them all.
 ;; Refreshing is asynchronous.
 ;;
+;; In the dashboard and review views the review tasks are grouped under
+;; their parent heading: a parent with two or more of them gets a header
+;; row, a review task whose parent is itself a listed review task is
+;; nested under it.  `z' folds or unfolds the group at point, `Z' all of
+;; them, RET on a header does the same as `z'.  Marks stay on folded
+;; tasks.  See `ardentia-dashboard-group-reviews' and
+;; `ardentia-dashboard-group-min'.
+;;
 ;; Tasks are marked, tagged, scheduled and changed with the keys of
 ;; org-agenda: `m' marks, `:' sets tags, `C-c C-s' schedules, `B' applies
 ;; a bulk action to the marked tasks.  Marks are kept as task keys, so
@@ -58,6 +66,7 @@
 
 (require 'tabulated-list)
 (require 'seq)
+(require 'cl-lib)
 (require 'subr-x)
 (require 'ardentia-core)
 (require 'ardentia-actions)
@@ -93,6 +102,19 @@ Nil (a buffer of older code) makes the next render install the format.")
 
 (defvar-local ardentia-dashboard--view-points nil
   "Alist of view and the row key that had point when the view was left.")
+
+(defvar-local ardentia-dashboard--folded nil
+  "Keys of the folded groups of this buffer.
+A key is (FILE ID-OR-LINE) of the parent heading, like
+`ardentia--task-key'.  Kept over re-renders and view switches, like the
+marks.")
+
+(defvar-local ardentia-dashboard--hidden nil
+  "The tasks the last render left out because their group is folded.
+Marks on them stay, so pruning marks and bulk actions look here too.")
+
+(defvar-local ardentia-dashboard--group-keys nil
+  "The keys of all groups (and parent tasks) of the last render.")
 
 (defvar-local ardentia-dashboard--marked nil
   "Keys (`ardentia--task-key') of the marked tasks of this buffer.
@@ -250,6 +272,11 @@ Nil shows plain text.  Takes effect on the next refresh."
 (defface ardentia-view-active
   '((t :inherit font-lock-function-name-face :weight normal))
   "The active view in the view indicator of the header line."
+  :group 'ardentia-faces)
+
+(defface ardentia-group
+  '((t :inherit font-lock-type-face :weight bold))
+  "The header row of a group of review tasks and its fold indicator."
   :group 'ardentia-faces)
 
 (defface ardentia-mark
@@ -586,18 +613,182 @@ The symbol `default' means use the option.")
       ardentia-due-display
     ardentia-dashboard--due-display))
 
+(defcustom ardentia-dashboard-group-reviews t
+  "Non-nil means review tasks are grouped under their parent heading.
+Applies to the dashboard and the review view.  See
+`ardentia-dashboard-group-min' and the keys `z', `Z' and RET on a group.
+Sorting a column by its title shows the tasks flat for as long as the
+sort lasts."
+  :type 'boolean
+  :group 'ardentia)
+
+(defcustom ardentia-dashboard-group-min 2
+  "Number of review tasks a parent heading needs to get a group header.
+A parent with fewer visible review tasks leaves them flat.  A review task
+below another listed review task is always nested under it."
+  :type 'integer
+  :group 'ardentia)
+
+;;;; Groups: review tasks under their parent heading
+
+(defun ardentia-dashboard--groupable-p (task)
+  "Return non-nil when TASK may be put in a group.
+Review tasks only; trouble tasks, merges and done tasks stay flat."
+  (and (eq (plist-get task :queue) 'review)
+       (not (plist-get task :trouble))
+       (not (plist-get task :merge))
+       (not (plist-get task :done))))
+
+(defun ardentia-dashboard--parent-key (task)
+  "Return the key (FILE ID-OR-LINE) of the parent heading of TASK, or nil.
+The shape is that of `ardentia--task-key', so the parent of a task is
+recognised when it is listed as a task itself."
+  (when-let* ((parent (plist-get task :parent))
+              (k (or (plist-get parent :id) (plist-get parent :line))))
+    (list (plist-get task :file) k)))
+
+(defun ardentia-dashboard--group-nodes (tasks folded)
+  "Arrange the sorted TASKS into display nodes, with FOLDED groups closed.
+Return a list (NODES HIDDEN KEYS).  A node is a plist: (:task TASK
+:depth N :kids N :total N :folded BOOL :last BOOL) for a task, or a group
+header (:group t :key KEY :title :outline :file :count :folded).  HIDDEN
+are the tasks left out by folding, KEYS the keys of all groups.
+
+Review tasks are grouped by the direct parent heading only.  When that
+parent is a listed review task, the task is nested under it and the
+parent task row acts as the header.  Otherwise a parent with at least
+`ardentia-dashboard-group-min' listed review tasks gets a header row
+and its tasks follow, one step indented.  A group stands where its
+first member stands in TASKS; members keep their order."
+  (let ((by-key (make-hash-table :test 'equal))
+        (kids (make-hash-table :test 'equal))
+        (up (make-hash-table :test 'equal))
+        (groups (make-hash-table :test 'equal))
+        (emitted (make-hash-table :test 'equal))
+        (min-size (max 1 ardentia-dashboard-group-min))
+        nodes hidden keys)
+    (dolist (tk tasks)
+      (when (ardentia-dashboard--groupable-p tk)
+        (puthash (ardentia--task-key tk) tk by-key)))
+    (dolist (tk tasks)
+      (when-let* (((ardentia-dashboard--groupable-p tk))
+                  (pk (ardentia-dashboard--parent-key tk)))
+        (let ((ptask (gethash pk by-key)))
+          (if (and ptask (not (eq ptask tk)))
+              (progn (puthash (ardentia--task-key tk) ptask up)
+                     (puthash pk (cons tk (gethash pk kids)) kids))
+            (puthash pk (cons tk (gethash pk groups)) groups)))))
+    (cl-labels
+        ((descendants (tk)
+           (let ((n 0))
+             (dolist (c (gethash (ardentia--task-key tk) kids) n)
+               (setq n (+ n 1 (descendants c))))))
+         (hide (tk)
+           (let ((key (ardentia--task-key tk)))
+             (unless (gethash key emitted)
+               (puthash key t emitted)
+               (push tk hidden)
+               (when (gethash key kids) (push key keys))
+               (mapc #'hide (reverse (gethash key kids))))))
+         (emit (tk depth last)
+           (let* ((key (ardentia--task-key tk)))
+             (unless (gethash key emitted)
+               (puthash key t emitted)
+               (let* ((ks (reverse (gethash key kids)))
+                      (open (not (member key folded))))
+                 (when ks (push key keys))
+                 (push (list :task tk :depth depth :kids (length ks)
+                             :total (descendants tk)
+                             :folded (and ks (not open)) :last last)
+                       nodes)
+                 (while ks
+                   (let ((c (pop ks)))
+                     (if open (emit c (1+ depth) (null ks)) (hide c))))))))
+         (root (tk)
+           (let ((cur tk) (n 0))
+             (while (and (gethash (ardentia--task-key cur) up)
+                         (< n (hash-table-count by-key)))
+               (setq cur (gethash (ardentia--task-key cur) up)
+                     n (1+ n)))
+             cur))
+         (emit-group (pk members)
+           (let* ((parent (plist-get (car members) :parent))
+                  (open (not (member pk folded)))
+                  (count (apply #'+ (mapcar (lambda (m) (1+ (descendants m)))
+                                            members))))
+             (push pk keys)
+             (push (list :group t :key pk
+                         :title (or (plist-get parent :title) "")
+                         :outline (plist-get (car members) :outline)
+                         :file (car pk) :count count :folded (not open))
+                   nodes)
+             (while members
+               (let ((m (pop members)))
+                 (if open (emit m 1 (null members)) (hide m)))))))
+      (dolist (tk tasks)
+        (cond ((not (ardentia-dashboard--groupable-p tk))
+               (push (list :task tk :depth 0 :kids 0) nodes))
+              ((gethash (ardentia--task-key tk) emitted))
+              (t (let* ((r (root tk))
+                        (pk (ardentia-dashboard--parent-key r))
+                        (members (and pk (not (gethash pk by-key))
+                                      (reverse (gethash pk groups)))))
+                   (if (>= (length members) min-size)
+                       (emit-group pk members)
+                     (emit r 0 t)))))))
+    (list (nreverse nodes) hidden keys)))
+
+(defun ardentia-dashboard--fold-glyph (folded)
+  "Return the fold indicator for a FOLDED or open group."
+  (if folded "\u25b8" "\u25be"))
+
+(defun ardentia-dashboard--decorate-title (title node)
+  "Return TITLE of the task of NODE with its tree prefix and group count."
+  (let ((depth (plist-get node :depth))
+        (kids (plist-get node :kids)))
+    (if (and (zerop depth) (zerop kids))
+        title
+      (concat
+       (ardentia-dashboard--maybe-face
+        (concat (make-string (* 2 depth) ?\s)
+                (cond ((> kids 0)
+                       (ardentia-dashboard--fold-glyph (plist-get node :folded)))
+                      ((plist-get node :last) "\u2514")
+                      (t "\u251c"))
+                " ")
+        'ardentia-group)
+       title
+       (if (> kids 0)
+           (ardentia-dashboard--maybe-face
+            (format " (%d)" (plist-get node :total))
+            'ardentia-dashboard-meta)
+         "")))))
+
+(defun ardentia-dashboard--group-row (group)
+  "Return the row vector of the header row GROUP."
+  (let* ((title (plist-get group :title))
+         (text (format "%s %s (%d)"
+                       (ardentia-dashboard--fold-glyph (plist-get group :folded))
+                       title (plist-get group :count)))
+         (file (plist-get group :file)))
+    (vector "" "" "" "" "" "" ""
+            (ardentia-dashboard--maybe-face
+             (file-name-nondirectory (or file "")) 'ardentia-dashboard-meta)
+            (propertize (if ardentia-dashboard-colors
+                            (propertize text 'face 'ardentia-group)
+                          text)
+                        'help-echo
+                        (string-join (append (plist-get group :outline)
+                                             (list title))
+                                     " / ")))))
+
 (defun ardentia-dashboard--entries (tasks filter now &optional hide-later merges)
   "Return `tabulated-list-entries' for TASKS restricted to queue FILTER at NOW.
 With HIDE-LATER, ready tasks that are not yet due are left out, trouble
-tasks never.  MERGES, the running merge rows, are added when FILTER is nil."
-  (mapcar (lambda (task)
-            (list task (ardentia-dashboard--colorize-row
-                        task
-                        (ardentia--task-row
-                         task now
-                         (and (eq (plist-get task :queue) 'review)
-                              (ardentia-review-for-you-class task)))
-                        now)))
+tasks never.  MERGES, the running merge rows, are added when FILTER is nil.
+Review tasks are grouped, see `ardentia-dashboard-group-reviews'; not
+while a column sort is active, which would scatter the groups."
+  (let* ((sorted
           (ardentia--sort-tasks
            (append
             (seq-filter (lambda (tk)
@@ -608,7 +799,35 @@ tasks never.  MERGES, the running merge rows, are added when FILTER is nil."
                                          (ardentia--task-later-p tk now)))))
                         tasks)
             (and (null filter) merges))
-           now)))
+           now))
+         (grouped (and ardentia-dashboard-group-reviews
+                       (null tabulated-list-sort-key)
+                       (seq-some (lambda (tk) (plist-get tk :parent)) sorted)))
+         (result (if grouped
+                     (ardentia-dashboard--group-nodes
+                      sorted ardentia-dashboard--folded)
+                   (list (mapcar (lambda (tk) (list :task tk :depth 0 :kids 0))
+                                 sorted)
+                         nil nil))))
+    (setq ardentia-dashboard--hidden (nth 1 result)
+          ardentia-dashboard--group-keys (nth 2 result))
+    (mapcar
+     (lambda (node)
+       (if (plist-get node :group)
+           (list node (ardentia-dashboard--group-row node))
+         (let* ((task (plist-get node :task))
+                (row (ardentia-dashboard--colorize-row
+                      task
+                      (ardentia--task-row
+                       task now
+                       (and (eq (plist-get task :queue) 'review)
+                            (ardentia-review-for-you-class task)))
+                      now)))
+           (when (or (> (plist-get node :depth) 0) (> (plist-get node :kids) 0))
+             (setq row (copy-sequence row))
+             (aset row 8 (ardentia-dashboard--decorate-title (aref row 8) node)))
+           (list task row))))
+     (nth 0 result))))
 
 ;;;; Filters
 
@@ -775,6 +994,8 @@ TODO state and priority work like in org-agenda."
     ("<backtab>" "Previous view" ardentia-dashboard-previous-view)
     ("g" "Refresh" ardentia-dashboard-refresh)
     ("d" "Toggle due date/time left" ardentia-dashboard-toggle-due)
+    ("z" "Fold/unfold group" ardentia-dashboard-fold-toggle)
+    ("Z" "Fold/unfold all groups" ardentia-dashboard-fold-all)
     ("$" "Usage" ardentia-usage-refresh)
     ("q" "Quit" quit-window))
    ("Filter"
@@ -813,15 +1034,31 @@ completed tasks; see `ardentia-dashboard--view'.
             #'ardentia-dashboard--window-size-change nil t)
   (ardentia-dashboard--refresh-timer-start))
 
+(defun ardentia-dashboard--group-p (id)
+  "Return non-nil when the row ID is a group header row."
+  (and id (plist-get id :group) t))
+
+(defun ardentia-dashboard--non-task-p (id)
+  "Return non-nil when the row ID is a running merge or a group header."
+  (and id (or (plist-get id :merge) (plist-get id :group)) t))
+
 (defun ardentia-dashboard--task-at-point ()
-  "Return the task plist of the row at point, or nil."
-  (tabulated-list-get-id))
+  "Return the task plist of the row at point, or nil.
+The header row of a group is no task; see `ardentia-dashboard--group-at-point'."
+  (let ((id (tabulated-list-get-id)))
+    (unless (ardentia-dashboard--group-p id) id)))
+
+(defun ardentia-dashboard--group-at-point ()
+  "Return the group header row at point, or nil."
+  (let ((id (tabulated-list-get-id)))
+    (and (ardentia-dashboard--group-p id) id)))
 
 (defun ardentia-dashboard--row-key (id)
-  "Return the stable key of the row ID, a task or merge plist, or nil.
+  "Return the stable key of the row ID, a task, merge or group plist, or nil.
 Unlike the plist itself the key survives edits of the task, such as a
 shifted line number or a changed property."
   (cond ((null id) nil)
+        ((plist-get id :group) (list :group (plist-get id :key)))
         ((plist-get id :merge) (list :merge (plist-get id :dir)))
         (t (ardentia--task-key id))))
 
@@ -1119,7 +1356,10 @@ was given from inside that buffer, where it is current already."
 
 (defun ardentia-dashboard--require-task (&optional review)
   "Return the task at point; with REVIEW require the review queue.
-The row of a running merge is not a task and signals a `user-error'."
+The row of a running merge or of a group header is not a task and signals
+a `user-error'."
+  (when (ardentia-dashboard--group-at-point)
+    (user-error "Not a task: a group of review tasks"))
   (let ((task (or (ardentia-dashboard--task-at-point) (user-error "No task here"))))
     (when (plist-get task :merge)
       (user-error "Not a task: a running merge"))
@@ -1184,10 +1424,12 @@ file is saved once it is stored."
 
 (defun ardentia-dashboard--key-at-point (&optional strict)
   "Return the key of the task row at point, or nil.
-A running merge is not a task.  With STRICT signal a `user-error' instead
-of returning nil."
+A running merge and a group header are not tasks.  With STRICT signal a
+`user-error' instead of returning nil."
   (let ((id (tabulated-list-get-id)))
     (cond ((null id) (and strict (user-error "No task here")))
+          ((plist-get id :group)
+           (and strict (user-error "Not a task: a group of review tasks")))
           ((plist-get id :merge)
            (and strict (user-error "Not a task: a running merge")))
           (t (ardentia--task-key id)))))
@@ -1204,7 +1446,7 @@ This is the `tabulated-list-printer' of the task list, so every way of
 printing the rows shows the marks."
   (tabulated-list-print-entry id cols)
   (when (and ardentia-dashboard--marked
-             (not (plist-get id :merge))
+             (not (ardentia-dashboard--non-task-p id))
              (member (ardentia--task-key id) ardentia-dashboard--marked))
     (save-excursion
       (forward-line -1)
@@ -1223,11 +1465,11 @@ the marks must stay."
   (when (and ardentia-dashboard--marked
              (ardentia-dashboard--marks-prunable-p))
     (let ((keys (delq nil
-                      (mapcar (lambda (entry)
-                                (let ((id (car entry)))
-                                  (and id (not (plist-get id :merge))
-                                       (ardentia--task-key id))))
-                              tabulated-list-entries))))
+                      (mapcar (lambda (id)
+                                (and id (not (ardentia-dashboard--non-task-p id))
+                                     (ardentia--task-key id)))
+                              (append (mapcar #'car tabulated-list-entries)
+                                      ardentia-dashboard--hidden)))))
       (setq ardentia-dashboard--marked
             (seq-filter (lambda (key) (member key keys))
                         ardentia-dashboard--marked)))))
@@ -1286,7 +1528,8 @@ With a numeric prefix N mark that many tasks in succession."
   (ardentia-dashboard--set-mark (not (ardentia-dashboard--marked-p))))
 
 (defun ardentia-dashboard-mark-all ()
-  "Mark all tasks shown, like `org-agenda-bulk-mark-all'."
+  "Mark all tasks shown, like `org-agenda-bulk-mark-all'.
+Tasks hidden in a folded group are not marked."
   (interactive)
   (ardentia-dashboard--map-task-rows
    (lambda () (ardentia-dashboard--set-mark t)))
@@ -1318,15 +1561,70 @@ Like `org-agenda-bulk-mark-regexp'."
          (setq n (1+ n)))))
     (message "%d new task%s marked" n (if (= n 1) "" "s"))))
 
+;;;; Folding groups
+
+(defun ardentia-dashboard--fold-key-at-point ()
+  "Return the key of the group the row at point belongs to or heads, or nil.
+On a header or on a task with nested tasks that is the row's own group;
+on any other grouped task it is the group of its parent heading."
+  (let ((id (tabulated-list-get-id)))
+    (cond ((null id) nil)
+          ((plist-get id :group) (plist-get id :key))
+          ((plist-get id :merge) nil)
+          (t (let ((own (ardentia--task-key id))
+                   (parent (ardentia-dashboard--parent-key id)))
+               (cond ((member own ardentia-dashboard--group-keys) own)
+                     ((member parent ardentia-dashboard--group-keys) parent)))))))
+
+(defun ardentia-dashboard--goto-group (key)
+  "Move point to the header row of the group KEY, a header or a parent task."
+  (or (ardentia-dashboard--goto-key (list :group key))
+      (ardentia-dashboard--goto-key key)))
+
+(defun ardentia-dashboard-fold-toggle ()
+  "Fold or unfold the group at point.
+On a task of a group fold the group and move point to its header."
+  (interactive)
+  (let ((key (or (ardentia-dashboard--fold-key-at-point)
+                 (user-error "No group here"))))
+    (if (member key ardentia-dashboard--folded)
+        (setq ardentia-dashboard--folded (delete key ardentia-dashboard--folded))
+      (ardentia-dashboard--goto-group key)
+      (push key ardentia-dashboard--folded))
+    (ardentia-dashboard--render)))
+
+(defun ardentia-dashboard-fold-all ()
+  "Fold all groups when any is open, else unfold all."
+  (interactive)
+  (let ((keys ardentia-dashboard--group-keys))
+    (unless keys (user-error "No groups here"))
+    (if (seq-some (lambda (k) (not (member k ardentia-dashboard--folded))) keys)
+        (setq ardentia-dashboard--folded
+              (seq-union keys ardentia-dashboard--folded))
+      (setq ardentia-dashboard--folded
+            (seq-difference ardentia-dashboard--folded keys)))
+    (ardentia-dashboard--render)))
+
+(defun ardentia-dashboard--after-sort (&rest _)
+  "Render again after a column sort, so that groups follow the sort state.
+Advice of `tabulated-list-sort': the sort scatters the group header rows
+until the groups are rebuilt (flat while a sort key is set)."
+  (when (derived-mode-p 'ardentia-dashboard-mode)
+    (ardentia-dashboard--render)))
+
+(advice-add 'tabulated-list-sort :after #'ardentia-dashboard--after-sort)
+
 ;;;; Bulk action on the marked tasks
 
 (defun ardentia-dashboard--marked-tasks ()
-  "Return the marked tasks of the current entries."
+  "Return the marked tasks of the current entries.
+Marked tasks hidden by a folded group count: the mark stays."
   (seq-filter (lambda (task)
-                (and (not (plist-get task :merge))
+                (and (not (ardentia-dashboard--non-task-p task))
                      (member (ardentia--task-key task)
                              ardentia-dashboard--marked)))
-              (mapcar #'car tabulated-list-entries)))
+              (append (mapcar #'car tabulated-list-entries)
+                      ardentia-dashboard--hidden)))
 
 (defun ardentia-dashboard--task-buffers (tasks)
   "Return the buffers visiting the files of TASKS that can be used."
@@ -1472,11 +1770,14 @@ a declined `a' keeps the marks."
 (defun ardentia-dashboard-enter ()
   "Open the task at point: review buffer, or session viewer when running.
 Other queues signal a `user-error'; `t' shows their last transcript.
-On a running merge open its directory with dired."
+On a running merge open its directory with dired.  On the header row of
+a group fold or unfold the group."
   (interactive)
-  (if (plist-get (ardentia-dashboard--task-at-point) :merge)
-      (ardentia-dashboard--open-merge)
-    (ardentia-dashboard--enter-task)))
+  (cond ((ardentia-dashboard--group-at-point)
+         (ardentia-dashboard-fold-toggle))
+        ((plist-get (ardentia-dashboard--task-at-point) :merge)
+         (ardentia-dashboard--open-merge))
+        (t (ardentia-dashboard--enter-task))))
 
 (defun ardentia-dashboard--open-merge ()
   "Open the directory of the running merge at point with dired."

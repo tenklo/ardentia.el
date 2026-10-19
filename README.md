@@ -144,6 +144,7 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-dashboard-priority` | Dashboard: set the priority of the task at point (SPC removes it) |
 | `ardentia-dashboard-priority-up` / `-down` | Dashboard: raise or lower that priority |
 | `ardentia-dashboard-mark`, `-unmark`, `-unmark-all`, `-mark-toggle`, `-mark-all`, `-mark-toggle-all`, `-mark-regexp` | Dashboard: marks, like org-agenda's bulk marks |
+| `ardentia-dashboard-fold-toggle`, `-fold-all` | Dashboard: fold or unfold the group of review tasks at point (`z`), or all groups (`Z`) |
 | `ardentia-dashboard-set-tags`, `-schedule`, `-deadline`, `-todo` | Dashboard: org-agenda's tag, schedule, deadline and TODO state commands on the task at point |
 | `ardentia-dashboard-bulk-action` | Dashboard: apply tag, schedule, deadline, TODO state or priority to all marked tasks, or accept the marked review tasks |
 | `ardentia-review-set-tags`, `-schedule`, `-deadline`, `-todo`, `-priority`, `-priority-up`, `-priority-down` | Review buffer: the same edits on the reviewed task |
@@ -197,6 +198,26 @@ or later task now, `k` stop the running task at point, `$` fetch the usage now,
 `S` sort by column, `q` quit, `?` menu of all keys of this buffer
 (`ardentia-dashboard-menu`, grouped, same keys; `.` opens the global menu, as it does directly in the buffer).
 A refresh keeps point and scroll position on the same task.
+
+Review tasks are grouped under their parent heading (dashboard and review view; the
+completed view and the other queues stay flat):
+- a parent heading with two or more listed review tasks gets a header row
+  (`▾ Title (3)`, the outline path in the tooltip) and its tasks follow, indented
+  - a review task whose parent heading is itself a listed review task is nested
+    under that task row, which then folds like a header
+  - a parent with one listed review task leaves it flat
+    (`ardentia-dashboard-group-min`, default 2); `ardentia-dashboard-group-reviews`
+    nil switches grouping off; sorting a column shows the rows flat meanwhile
+  - the group stands where its first member stands, the members keep their order
+- `z` folds or unfolds the group at point (on a task: folds its group and goes to
+  the header), `Z` folds all groups, or unfolds all when all are folded, RET on a
+  header does the same as `z`
+  - folds are kept across refreshes and view switches
+  - header rows are no tasks: they cannot be marked or acted on; a mark on a
+    folded task stays, `*` marks only the rows shown, bulk actions include
+    the marked folded tasks
+  - needs an org-tool whose `find-tagged` reports `parent` and `outline`; an older
+    one shows the review tasks flat
 
 Marks and edits work like in org-agenda:
 - `m` marks the task and moves down, `u` unmarks and moves down, `U`
@@ -445,7 +466,7 @@ viewer RET uses on a running task.
 `ardentia-org-directory`, `ardentia-org-tool`, `ardentia-host-command`,
 `ardentia-hosts-file`, `ardentia-capture-file`,
 `ardentia-mode-line-interval`, `ardentia-process-timeout`,
-`ardentia-stale-minutes`, `ardentia-dashboard-show-later`, `ardentia-due-display`,
+`ardentia-stale-minutes`, `ardentia-dashboard-show-later`, `ardentia-dashboard-group-reviews`, `ardentia-dashboard-group-min`, `ardentia-due-display`,
 `ardentia-dashboard-colors` (default on, see Colors below),
 `ardentia-completed-period` (default `all`; also `last-30-days`,
 `last-7-days`, `today`),

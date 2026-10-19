@@ -5136,4 +5136,225 @@ COUNTS is a variable bound to a cons (SAVES . REFRESHES)."
                 (should-not (buffer-modified-p (find-buffer-visiting f))))))
         (kill-buffer rev)))))
 
+;;;; Groups of review tasks under their parent heading
+
+(defun ardentia-test--gt (title parent-id parent-title days &optional outline)
+  "Return a review task TITLE below the heading PARENT-ID, AI_SESSION DAYS old.
+The task is its own heading with the id of its title.  PARENT-ID nil makes
+it a top-level task."
+  (list :title title :queue 'review :file "/o/g.org"
+        :id (format "id-%s" title) :line 1 :tags '("humanreview")
+        :parent (and parent-id
+                     (list :line 3 :level 1 :title parent-title :id parent-id))
+        :outline outline
+        :props `(("AI_SESSION" . ,(ardentia-test--stamp-ago days))
+                 ("AI_STATUS" . "completed"))))
+
+(defun ardentia-test--group-tasks ()
+  "Return review tasks: two siblings of Project A, one of Project B."
+  (list (ardentia-test--gt "Sub task 1" "id-pa" "Project A" 5 '("Top"))
+        (ardentia-test--gt "Loner" "id-pb" "Project B" 4)
+        (ardentia-test--gt "Sub task 2" "id-pa" "Project A" 3 '("Top"))))
+
+(defun ardentia-test--row-titles ()
+  "Return the title column of every row of the current buffer, top to bottom."
+  (mapcar (lambda (e) (substring-no-properties (aref (cadr e) 8)))
+          tabulated-list-entries))
+
+(ert-deftest ardentia-test-group-parse-parent ()
+  (let* ((json (concat "[{\"title\":\"A\",\"tags\":[\"humanreview\"],"
+                       "\"parent\":{\"line\":4,\"level\":2,\"title\":\"P\","
+                       "\"id\":\"u-1\"},\"outline\":[\"Top\",\"P\"]},"
+                       "{\"title\":\"B\",\"parent\":\"null\",\"outline\":[]},"
+                       "{\"title\":\"C\",\"parent\":null,\"outline\":null},"
+                       "{\"title\":\"D\",\"parent\":{\"line\":9,\"level\":1,"
+                       "\"title\":\"Q\",\"id\":\"null\"}},"
+                       "{\"title\":\"E\"}]"))
+         (tasks (ardentia--tasks-from-json (ardentia--parse-json json))))
+    (should (equal (plist-get (nth 0 tasks) :parent)
+                   '(:line 4 :level 2 :title "P" :id "u-1")))
+    (should (equal (plist-get (nth 0 tasks) :outline) '("Top" "P")))
+    (should-not (plist-get (nth 1 tasks) :parent))
+    (should-not (plist-get (nth 1 tasks) :outline))
+    (should-not (plist-get (nth 2 tasks) :parent))
+    (should-not (plist-get (nth 2 tasks) :outline))
+    (should (equal (plist-get (nth 3 tasks) :parent)
+                   '(:line 9 :level 1 :title "Q" :id nil)))
+    ;; an older org-tool without the fields
+    (should-not (plist-get (nth 4 tasks) :parent))
+    (should-not (plist-get (nth 4 tasks) :outline))))
+
+(ert-deftest ardentia-test-group-siblings-get-header ()
+  (ardentia-test--with-dash (ardentia-test--group-tasks)
+    ;; the group stands where its first member (the oldest) stands
+    (should (equal (mapcar (lambda (e) (plist-get (car e) :title))
+                           tabulated-list-entries)
+                   '("Project A" "Sub task 1" "Sub task 2" "Loner")))
+    (let ((rows (ardentia-test--row-titles)))
+      (should (string-match-p "\\`\u25be Project A (2)\\'" (nth 0 rows)))
+      (should (string-match-p "\\`  \u251c Sub task 1\\'" (nth 1 rows)))
+      (should (string-match-p "\\`  \u2514 Sub task 2\\'" (nth 2 rows)))
+      (should (equal (nth 3 rows) "Loner")))
+    (should (equal (get-text-property
+                    0 'help-echo (aref (cadr (car tabulated-list-entries)) 8))
+                   "Top / Project A"))
+    ;; the printed buffer shows the same
+    (should (string-match-p "\u25be Project A (2)" (buffer-string)))))
+
+(ert-deftest ardentia-test-group-min-and-switch ()
+  (ardentia-test--with-dash (ardentia-test--group-tasks)
+    (let ((ardentia-dashboard-group-min 3))
+      (ardentia-dashboard--render)
+      (should (equal (ardentia-test--row-titles)
+                     '("Sub task 1" "Loner" "Sub task 2"))))
+    (let ((ardentia-dashboard-group-min 1))
+      (ardentia-dashboard--render)
+      (should (= 5 (length tabulated-list-entries))))
+    (let ((ardentia-dashboard-group-reviews nil))
+      (ardentia-dashboard--render)
+      (should (equal (ardentia-test--row-titles)
+                     '("Sub task 1" "Loner" "Sub task 2"))))
+    ;; a column sort would scatter the groups: flat while it lasts
+    (setq tabulated-list-sort-key '("Age" . nil))
+    (ardentia-dashboard--render)
+    (should (= 3 (length tabulated-list-entries)))
+    (setq tabulated-list-sort-key nil)
+    (ardentia-dashboard--render)
+    (should (= 4 (length tabulated-list-entries)))))
+
+(ert-deftest ardentia-test-group-review-view-and-other-queues ()
+  (let ((ready (list :title "Ready 1" :queue 'ready :file "/o/g.org"
+                     :id "r1" :line 9 :tags '("aiready")
+                     :parent '(:line 3 :level 1 :title "Project A" :id "id-pa")))
+        (ready2 (list :title "Ready 2" :queue 'ready :file "/o/g.org"
+                      :id "r2" :line 10 :tags '("aiready")
+                      :parent '(:line 3 :level 1 :title "Project A" :id "id-pa"))))
+    (ardentia-test--with-dash (append (ardentia-test--group-tasks)
+                                      (list ready ready2))
+      ;; only review tasks are grouped
+      (should (= 6 (length tabulated-list-entries)))
+      (should (member "Ready 1" (ardentia-test--row-titles)))
+      (setq ardentia-dashboard--view 'review)
+      (ardentia-dashboard--render)
+      (should (equal (mapcar (lambda (e) (plist-get (car e) :title))
+                             tabulated-list-entries)
+                     '("Project A" "Sub task 1" "Sub task 2" "Loner"))))))
+
+(ert-deftest ardentia-test-group-nesting-under-listed-parent ()
+  (ardentia-test--with-dash
+      (list (ardentia-test--gt "Epic" "id-top" "Top" 9)
+            (ardentia-test--gt "Part 1" "id-Epic" "Epic" 5)
+            (ardentia-test--gt "Part 2" "id-Epic" "Epic" 4)
+            (ardentia-test--gt "Lone parent" nil nil 3)
+            (ardentia-test--gt "Only child" "id-Lone parent" "Lone parent" 2))
+    ;; no header rows, the parent task row is the header; a single child
+    ;; below a listed parent is nested too
+    (should-not (seq-some (lambda (e) (plist-get (car e) :group))
+                          tabulated-list-entries))
+    (let ((rows (ardentia-test--row-titles)))
+      (should (string-match-p "\\`\u25be Epic (2)\\'" (nth 0 rows)))
+      (should (string-match-p "\\`  \u251c Part 1" (nth 1 rows)))
+      (should (string-match-p "\\`  \u2514 Part 2" (nth 2 rows)))
+      (should (string-match-p "\\`\u25be Lone parent (1)" (nth 3 rows)))
+      (should (string-match-p "\\`  \u2514 Only child" (nth 4 rows))))
+    ;; z on the child folds its parent task and goes to its row
+    (ardentia-test--goto-title "id-Part 2")
+    (ardentia-dashboard-fold-toggle)
+    (should (equal (plist-get (ardentia-dashboard--task-at-point) :title) "Epic"))
+    (should (equal (mapcar (lambda (e) (plist-get (car e) :title))
+                           tabulated-list-entries)
+                   '("Epic" "Lone parent" "Only child")))
+    (should (string-match-p "\u25b8 Epic (2)" (car (ardentia-test--row-titles))))))
+
+(ert-deftest ardentia-test-group-header-rows-are-no-tasks ()
+  (ardentia-test--with-dash (ardentia-test--group-tasks)
+    (goto-char (point-min))
+    (ardentia-dashboard--goto-first-row)
+    (should (ardentia-dashboard--group-at-point))
+    (should-not (ardentia-dashboard--task-at-point))
+    (should-not (ardentia-dashboard--key-at-point))
+    (should-error (ardentia-dashboard--require-task) :type 'user-error)
+    (should-error (ardentia-dashboard-mark) :type 'user-error)
+    (should-error (ardentia-dashboard-accept) :type 'user-error)
+    (should (equal (ardentia-dashboard--row-key (ardentia-dashboard--group-at-point))
+                   '(:group ("/o/g.org" "id-pa"))))
+    ;; mark all marks the three tasks, not the header
+    (ardentia-dashboard-mark-all)
+    (should (= 3 (length ardentia-dashboard--marked)))
+    (should (= 3 (length (ardentia-dashboard--marked-tasks))))
+    (let (n) (ardentia-dashboard--map-task-rows (lambda () (push 1 n)))
+         (should (= 3 (length n))))
+    (ardentia-dashboard-unmark-all)
+    (should-not ardentia-dashboard--marked)))
+
+(ert-deftest ardentia-test-group-fold-keeps-marks-and-point ()
+  (ardentia-test--with-dash (ardentia-test--group-tasks)
+    (ardentia-test--goto-title "id-Sub task 1")
+    (ardentia-dashboard-mark)
+    (should (= 1 (length ardentia-dashboard--marked)))
+    ;; z on a member folds its group and moves point to the header
+    (ardentia-test--goto-title "id-Sub task 2")
+    (ardentia-dashboard-fold-toggle)
+    (should (ardentia-dashboard--group-at-point))
+    (should (equal (mapcar (lambda (e) (plist-get (car e) :title))
+                           tabulated-list-entries)
+                   '("Project A" "Loner")))
+    (should (string-match-p "\u25b8 Project A (2)" (buffer-string)))
+    (should-not (string-match-p "Sub task" (buffer-string)))
+    ;; the mark stays and still counts for bulk actions
+    (should (= 1 (length ardentia-dashboard--marked)))
+    (should (equal (mapcar (lambda (tk) (plist-get tk :title))
+                           (ardentia-dashboard--marked-tasks))
+                   '("Sub task 1")))
+    ;; fold state and point survive more renders
+    (ardentia-dashboard--render)
+    (ardentia-dashboard--render)
+    (should (ardentia-dashboard--group-at-point))
+    (should-not (string-match-p "Sub task" (buffer-string)))
+    ;; mark all only marks what is visible
+    (ardentia-dashboard-mark-all)
+    (should (= 2 (length ardentia-dashboard--marked)))
+    ;; RET on the header unfolds, the mark shows again
+    (ardentia-dashboard--goto-group '("/o/g.org" "id-pa"))
+    (ardentia-dashboard-enter)
+    (should (= 4 (length tabulated-list-entries)))
+    (should (equal (ardentia-test--mark-glyphs) '("Loner" "Sub task 1")))
+    (should (ardentia-dashboard--group-at-point))))
+
+(ert-deftest ardentia-test-group-fold-all-and-view-switch ()
+  (ardentia-test--with-dash
+      (append (ardentia-test--group-tasks)
+              (list (ardentia-test--gt "Other 1" "id-pc" "Project C" 2)
+                    (ardentia-test--gt "Other 2" "id-pc" "Project C" 1)))
+    (should (= 7 (length tabulated-list-entries)))
+    (ardentia-dashboard-fold-all)
+    (should (= 3 (length tabulated-list-entries)))
+    (ardentia-dashboard-fold-all)
+    (should (= 7 (length tabulated-list-entries)))
+    ;; one group open: fold all again
+    (ardentia-test--goto-title "id-Other 1")
+    (ardentia-dashboard-fold-toggle)
+    (should (= 5 (length tabulated-list-entries)))
+    (ardentia-dashboard-fold-all)
+    (should (= 3 (length tabulated-list-entries)))
+    ;; the folds belong to the buffer, not to the view
+    (cl-letf (((symbol-function 'ardentia-dashboard--completed-refresh) #'ignore))
+      (ardentia-dashboard--switch-view 'review)
+      (should (= 3 (length tabulated-list-entries)))
+      (ardentia-dashboard--switch-view 'dashboard)
+      (should (= 3 (length tabulated-list-entries))))
+    (ardentia-dashboard--goto-first-row)
+    (should (ardentia-dashboard--group-at-point))
+    (should-error (ardentia-dashboard-visit) :type 'user-error)))
+
+(ert-deftest ardentia-test-group-keys ()
+  (should (eq (keymap-lookup ardentia-dashboard-mode-map "z")
+              #'ardentia-dashboard-fold-toggle))
+  (should (eq (keymap-lookup ardentia-dashboard-mode-map "Z")
+              #'ardentia-dashboard-fold-all))
+  (should-not (keymap-lookup tabulated-list-mode-map "z"))
+  (should-not (keymap-lookup tabulated-list-mode-map "Z"))
+  (should (eq (keymap-lookup ardentia-dashboard-mode-map "TAB")
+              #'ardentia-dashboard-next-view)))
+
 ;;; ardentia-test.el ends here
