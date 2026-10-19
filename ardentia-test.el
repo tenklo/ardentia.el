@@ -3402,7 +3402,7 @@ fetching and the hosts file are replaced by fixtures, the timer is boxed."
                                   (format "%s" (keymap-lookup
                                                 ardentia-dashboard-mode-map key)))))
     (should (eq (keymap-lookup ardentia-dashboard-mode-map "S")
-                'tabulated-list-sort))
+                'ardentia-dashboard-sort))
     (ardentia-dashboard-next-view)
     (should (eq (ardentia-dashboard--view-now) 'review))
     (ardentia-dashboard-next-view)
@@ -4404,7 +4404,8 @@ Bindings inherited from a parent keymap are not included."
       (let ((bindings (ardentia-test--map-bindings map)))
         (should (>= (length bindings) (+ 2 minimum)))
         (dolist (b bindings)
-          (unless (equal (car b) "?")
+          (unless (or (equal (car b) "?")
+                      (string-prefix-p "<remap>" (car b)))
             (should (or (equal (ardentia-test--suffix-command prefix (car b))
                                (cdr b))
                         (equal (cdr (assoc (car b) alternates)) (cdr b))))))))))
@@ -5221,6 +5222,28 @@ it a top-level task."
     (setq tabulated-list-sort-key nil)
     (ardentia-dashboard--render)
     (should (= 4 (length tabulated-list-entries)))))
+
+;; The sort commands are remapped in the dashboard only, never advised.
+(ert-deftest ardentia-test-group-sort-without-global-advice ()
+  (should-not (advice--p (advice--symbol-function 'tabulated-list-sort)))
+  (should-not (advice--p (advice--symbol-function 'tabulated-list-col-sort)))
+  (ardentia-test--with-dash (ardentia-test--group-tasks)
+    (let ((ardentia-dashboard-group-min 1))
+      (ardentia-dashboard--render)
+      (should (= 5 (length tabulated-list-entries)))
+      (should (eq (key-binding "S") 'ardentia-dashboard-sort))
+      (should (eq (command-remapping #'tabulated-list-col-sort)
+                  'ardentia-dashboard-col-sort))
+      ;; the dashboard columns are not sortable; make "Age" (column 4) so
+      (setf (nth 2 (aref tabulated-list-format 4)) t)
+      (ardentia-dashboard-sort 4)
+      (should tabulated-list-sort-key)
+      (should (= 3 (length tabulated-list-entries)))
+      (should-not (seq-some #'ardentia-dashboard--group-p
+                            (mapcar #'car tabulated-list-entries)))
+      (setq tabulated-list-sort-key nil)
+      (ardentia-dashboard--render)
+      (should (= 5 (length tabulated-list-entries))))))
 
 (ert-deftest ardentia-test-group-review-view-and-other-queues ()
   (let ((ready (list :title "Ready 1" :queue 'ready :file "/o/g.org"

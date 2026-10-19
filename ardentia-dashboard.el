@@ -1015,6 +1015,13 @@ TODO state and priority work like in org-agenda."
 
 (add-hook 'ardentia-usage-updated-hook #'ardentia-dashboard--render-all)
 
+;; Both the S key and a click on a column title sort and thereby scatter the
+;; group rows; the remaps rebuild them (see `ardentia-dashboard-sort').
+(keymap-set ardentia-dashboard-mode-map "<remap> <tabulated-list-sort>"
+            #'ardentia-dashboard-sort)
+(keymap-set ardentia-dashboard-mode-map "<remap> <tabulated-list-col-sort>"
+            #'ardentia-dashboard-col-sort)
+
 (define-derived-mode ardentia-dashboard-mode tabulated-list-mode "Ardentia"
   "Major mode listing the agent team's tasks in one of three views.
 The views are the dashboard (all open queues), the review queue and the
@@ -1201,6 +1208,8 @@ top."
     (setq tabulated-list-printer #'ardentia-dashboard--print-entry)
     (setq tabulated-list-entries (ardentia-dashboard--view-entries
                                   view (current-time)))
+    ;; The original order of `tabulated-list-sort' refers to the old entries.
+    (setq tabulated-list--original-order nil)
     (ardentia-dashboard--prune-marks)
     (let ((marks (unless switched (ardentia-dashboard--remember-positions))))
       (tabulated-list-print)
@@ -1605,14 +1614,22 @@ On a task of a group fold the group and move point to its header."
             (seq-difference ardentia-dashboard--folded keys)))
     (ardentia-dashboard--render)))
 
-(defun ardentia-dashboard--after-sort (&rest _)
-  "Render again after a column sort, so that groups follow the sort state.
-Advice of `tabulated-list-sort': the sort scatters the group header rows
-until the groups are rebuilt (flat while a sort key is set)."
-  (when (derived-mode-p 'ardentia-dashboard-mode)
-    (ardentia-dashboard--render)))
+(defun ardentia-dashboard-sort (&optional n)
+  "Sort by the column at point (or the Nth), then rebuild the groups.
+Like `tabulated-list-sort' (N is passed on), but the sort scatters the
+group header rows, so the entries are built again: flat while a sort key
+is set, grouped when it is cleared."
+  (interactive "P")
+  (tabulated-list-sort n)
+  (ardentia-dashboard--render))
 
-(advice-add 'tabulated-list-sort :after #'ardentia-dashboard--after-sort)
+(defun ardentia-dashboard-col-sort (event)
+  "Sort by the column of the mouse click EVENT, then rebuild the groups.
+See `ardentia-dashboard-sort'."
+  (interactive "e")
+  (tabulated-list-col-sort event)
+  (with-current-buffer (window-buffer (posn-window (event-start event)))
+    (ardentia-dashboard--render)))
 
 ;;;; Bulk action on the marked tasks
 
