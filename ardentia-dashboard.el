@@ -38,7 +38,7 @@
 ;;   tasks, so this view keeps its own list, fetched when you switch to it
 ;;   and on every refresh while you are in it.
 ;;
-;; The keys 1, 2, 3, TAB and S-TAB switch the view.  The filters (host,
+;; The keys 1, 2, 3, ] and [ switch the view.  The filters (host,
 ;; title, later tasks, period, state) belong to the buffer, persist over
 ;; view switches and apply where they make sense; `f' shows them all.
 ;; Refreshing is asynchronous.
@@ -46,8 +46,8 @@
 ;; In the dashboard and review views the review tasks are grouped under
 ;; their parent heading: a parent with two or more of them gets a header
 ;; row, a review task whose parent is itself a listed review task is
-;; nested under it.  `z' folds or unfolds the group at point, `Z' all of
-;; them, RET on a header does the same as `z'.  Marks stay on folded
+;; nested under it.  TAB folds or unfolds the group at point, S-TAB all of
+;; them, RET on a header does the same as TAB.  Marks stay on folded
 ;; tasks.  See `ardentia-dashboard-group-reviews' and
 ;; `ardentia-dashboard-group-min'.
 ;;
@@ -85,7 +85,7 @@ Only read when `ardentia-dashboard--view' is unset: `review' then means
 the review view.  Nothing sets it any more.")
 
 (defconst ardentia-dashboard--views '(dashboard review completed)
-  "The views of the task list, in the order TAB cycles through them.")
+  "The views of the task list, in the order ] cycles through them.")
 
 (defconst ardentia-dashboard--view-labels
   '((dashboard . "Dashboard") (review . "Review") (completed . "Completed"))
@@ -616,7 +616,7 @@ The symbol `default' means use the option.")
 (defcustom ardentia-dashboard-group-reviews t
   "Non-nil means review tasks are grouped under their parent heading.
 Applies to the dashboard and the review view.  See
-`ardentia-dashboard-group-min' and the keys `z', `Z' and RET on a group.
+`ardentia-dashboard-group-min' and the keys TAB, S-TAB and RET on a group.
 Sorting a column by its title shows the tasks flat for as long as the
 sort lasts."
   :type 'boolean
@@ -990,12 +990,12 @@ TODO state and priority work like in org-agenda."
     ("1" "Dashboard" ardentia-dashboard)
     ("2" "Review (r)" ardentia-review-inbox)
     ("3" "Completed (c)" ardentia-completed)
-    ("TAB" "Next view" ardentia-dashboard-next-view)
-    ("<backtab>" "Previous view" ardentia-dashboard-previous-view)
+    ("]" "Next view" ardentia-dashboard-next-view)
+    ("[" "Previous view" ardentia-dashboard-previous-view)
     ("g" "Refresh" ardentia-dashboard-refresh)
     ("d" "Toggle due date/time left" ardentia-dashboard-toggle-due)
-    ("z" "Fold/unfold group" ardentia-dashboard-fold-toggle)
-    ("Z" "Fold/unfold all groups" ardentia-dashboard-fold-all)
+    ("TAB" "Fold/unfold group" ardentia-dashboard-fold-toggle)
+    ("<backtab>" "Fold/unfold all groups" ardentia-dashboard-fold-all)
     ("$" "Usage" ardentia-usage-refresh)
     ("q" "Quit" quit-window))
    ("Filter"

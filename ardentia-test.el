@@ -3385,8 +3385,10 @@ fetching and the hosts file are replaced by fixtures, the timer is boxed."
     (dolist (pair '(("1" . ardentia-dashboard) ("2" . ardentia-review-inbox)
                     ("3" . ardentia-completed) ("c" . ardentia-completed)
                     ("r" . ardentia-review-inbox)
-                    ("TAB" . ardentia-dashboard-next-view)
-                    ("<backtab>" . ardentia-dashboard-previous-view)
+                    ("]" . ardentia-dashboard-next-view)
+                    ("[" . ardentia-dashboard-previous-view)
+                    ("TAB" . ardentia-dashboard-fold-toggle)
+                    ("<backtab>" . ardentia-dashboard-fold-all)
                     ("f" . ardentia-dashboard-filter-menu)
                     ("h" . ardentia-dashboard-cycle-host)
                     ("/" . ardentia-dashboard-filter-title)
@@ -5280,7 +5282,7 @@ it a top-level task."
       (should (string-match-p "\\`  \u2514 Part 2" (nth 2 rows)))
       (should (string-match-p "\\`\u25be Lone parent (1)" (nth 3 rows)))
       (should (string-match-p "\\`  \u2514 Only child" (nth 4 rows))))
-    ;; z on the child folds its parent task and goes to its row
+    ;; TAB on the child folds its parent task and goes to its row
     (ardentia-test--goto-title "id-Part 2")
     (ardentia-dashboard-fold-toggle)
     (should (equal (plist-get (ardentia-dashboard--task-at-point) :title) "Epic"))
@@ -5315,7 +5317,7 @@ it a top-level task."
     (ardentia-test--goto-title "id-Sub task 1")
     (ardentia-dashboard-mark)
     (should (= 1 (length ardentia-dashboard--marked)))
-    ;; z on a member folds its group and moves point to the header
+    ;; TAB on a member folds its group and moves point to the header
     (ardentia-test--goto-title "id-Sub task 2")
     (ardentia-dashboard-fold-toggle)
     (should (ardentia-dashboard--group-at-point))
@@ -5371,13 +5373,13 @@ it a top-level task."
     (should-error (ardentia-dashboard-visit) :type 'user-error)))
 
 (ert-deftest ardentia-test-group-keys ()
-  (should (eq (keymap-lookup ardentia-dashboard-mode-map "z")
-              #'ardentia-dashboard-fold-toggle))
-  (should (eq (keymap-lookup ardentia-dashboard-mode-map "Z")
-              #'ardentia-dashboard-fold-all))
-  (should-not (keymap-lookup tabulated-list-mode-map "z"))
-  (should-not (keymap-lookup tabulated-list-mode-map "Z"))
-  (should (eq (keymap-lookup ardentia-dashboard-mode-map "TAB")
-              #'ardentia-dashboard-next-view)))
+  (dolist (pair '(("TAB" . ardentia-dashboard-fold-toggle)
+                  ("<backtab>" . ardentia-dashboard-fold-all)
+                  ("]" . ardentia-dashboard-next-view)
+                  ("[" . ardentia-dashboard-previous-view)))
+    (should (eq (keymap-lookup ardentia-dashboard-mode-map (car pair))
+                (cdr pair))))
+  (should-not (keymap-lookup ardentia-dashboard-mode-map "z"))
+  (should-not (keymap-lookup ardentia-dashboard-mode-map "Z")))
 
 ;;; ardentia-test.el ends here

@@ -144,7 +144,7 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-dashboard-priority` | Dashboard: set the priority of the task at point (SPC removes it) |
 | `ardentia-dashboard-priority-up` / `-down` | Dashboard: raise or lower that priority |
 | `ardentia-dashboard-mark`, `-unmark`, `-unmark-all`, `-mark-toggle`, `-mark-all`, `-mark-toggle-all`, `-mark-regexp` | Dashboard: marks, like org-agenda's bulk marks |
-| `ardentia-dashboard-fold-toggle`, `-fold-all` | Dashboard: fold or unfold the group of review tasks at point (`z`), or all groups (`Z`) |
+| `ardentia-dashboard-fold-toggle`, `-fold-all` | Dashboard: fold or unfold the group of review tasks at point (`TAB`), or all groups (`<backtab>`) |
 | `ardentia-dashboard-set-tags`, `-schedule`, `-deadline`, `-todo` | Dashboard: org-agenda's tag, schedule, deadline and TODO state commands on the task at point |
 | `ardentia-dashboard-bulk-action` | Dashboard: apply tag, schedule, deadline, TODO state or priority to all marked tasks, or accept the marked review tasks |
 | `ardentia-review-set-tags`, `-schedule`, `-deadline`, `-todo`, `-priority`, `-priority-up`, `-priority-down` | Review buffer: the same edits on the reviewed task |
@@ -158,7 +158,7 @@ switch it to a view; filters stay set across views.
 
 Views (all views):
 `1` dashboard (all open queues), `2` review (tasks waiting for review),
-`3` completed (everything handed back, see below), `TAB` / `<backtab>` next /
+`3` completed (everything handed back, see below), `]` / `[` next /
 previous view (cyclic), `c` and `r` are aliases for completed and review.
 The header line starts with the views, the active one in brackets. Each view
 remembers the row you were on.
@@ -209,9 +209,9 @@ completed view and the other queues stay flat):
     (`ardentia-dashboard-group-min`, default 2); `ardentia-dashboard-group-reviews`
     nil switches grouping off; sorting a column shows the rows flat meanwhile
   - the group stands where its first member stands, the members keep their order
-- `z` folds or unfolds the group at point (on a task: folds its group and goes to
-  the header), `Z` folds all groups, or unfolds all when all are folded, RET on a
-  header does the same as `z`
+- `TAB` folds or unfolds the group at point (on a task: folds its group and goes to
+  the header), `<backtab>` folds all groups, or unfolds all when all are folded, RET on a
+  header does the same as `TAB`
   - folds are kept across refreshes and view switches
   - header rows are no tasks: they cannot be marked or acted on; a mark on a
     folded task stays, `*` marks only the rows shown, bulk actions include
