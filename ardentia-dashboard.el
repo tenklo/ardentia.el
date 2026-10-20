@@ -1081,8 +1081,10 @@ shifted line number or a changed property."
 `tabulated-list-print' erases the buffer, which resets the point and
 start of all its windows, so they are put back by
 `ardentia-dashboard--restore-positions'.  The result is a cons of the
-mark of point and a list of (WINDOW MARK SCROLL-LINES), SCROLL-LINES
-being the number of lines the window start lies above the window point."
+mark of point and a list of (WINDOW MARK SCROLL-LINES AT-TOP).
+SCROLL-LINES is the number of lines the window start lies above the
+window point.  AT-TOP is non-nil when the window start was the start of
+the buffer, so the column titles in line 1 are in view."
   (cons (ardentia-dashboard--mark-at (point))
         (mapcar (lambda (win)
                   (let ((pt (window-point win)))
@@ -1092,7 +1094,8 @@ being the number of lines the window start lies above the window point."
                           (count-lines (window-start win)
                                        (save-excursion
                                          (goto-char pt)
-                                         (line-beginning-position))))))
+                                         (line-beginning-position)))
+                          (= (window-start win) (point-min)))))
                 (get-buffer-window-list (current-buffer) nil t))))
 
 (defun ardentia-dashboard--goto-mark (mark)
@@ -1115,15 +1118,19 @@ When the row is gone, go to the same line number, clamped to the last row."
 
 (defun ardentia-dashboard--restore-positions (marks)
   "Put point and the windows back as recorded in MARKS.
-MARKS is the result of `ardentia-dashboard--remember-positions'."
+MARKS is the result of `ardentia-dashboard--remember-positions'.
+A window that showed the top of the buffer keeps showing it, whatever
+the number of rows above its point has become."
   (save-excursion
     (dolist (entry (cdr marks))
-      (pcase-let ((`(,win ,mark ,scroll) entry))
+      (pcase-let ((`(,win ,mark ,scroll ,at-top) entry))
         (when (window-live-p win)
           (ardentia-dashboard--goto-mark mark)
           (set-window-point win (point))
-          (forward-line (- scroll))
-          (set-window-start win (point) t)))))
+          (if at-top
+              (set-window-start win (point-min) t)
+            (forward-line (- scroll))
+            (set-window-start win (point) t))))))
   (ardentia-dashboard--goto-mark (car marks)))
 
 (defun ardentia-dashboard--ensure-format (view)

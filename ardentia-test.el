@@ -5372,6 +5372,33 @@ it a top-level task."
     (should (ardentia-dashboard--group-at-point))
     (should-error (ardentia-dashboard-visit) :type 'user-error)))
 
+(ert-deftest ardentia-test-group-unfold-all-keeps-column-titles ()
+  (ardentia-test--with-dash
+      (append (ardentia-test--group-tasks)
+              (list (ardentia-test--gt "Other 1" "id-pc" "Project C" 2)
+                    (ardentia-test--gt "Other 2" "id-pc" "Project C" 1)))
+    (save-window-excursion
+      (let ((win (selected-window)) (other nil))
+        (setq other (condition-case nil (split-window win) (error nil)))
+        (skip-unless other)
+        (set-window-buffer win (get-buffer-create " *ardentia-test-other*"))
+        (set-window-buffer other buf)
+        (ardentia-dashboard-fold-all)
+        (should (= 3 (length tabulated-list-entries)))
+        (goto-char (point-max))
+        (forward-line -1)
+        (should (ardentia-dashboard--group-at-point))
+        (set-window-point other (point))
+        (set-window-start other (point-min))
+        (let ((key (ardentia-dashboard--row-key (tabulated-list-get-id))))
+          (ardentia-dashboard-fold-all)
+          (should (= 7 (length tabulated-list-entries)))
+          (should (= (point-min) (window-start other)))
+          (should (equal key (save-excursion
+                               (goto-char (window-point other))
+                               (ardentia-dashboard--row-key
+                                (tabulated-list-get-id))))))))))
+
 (ert-deftest ardentia-test-group-keys ()
   (dolist (pair '(("TAB" . ardentia-dashboard-fold-toggle)
                   ("<backtab>" . ardentia-dashboard-fold-all)
