@@ -75,6 +75,7 @@
 (require 'ardentia-run)
 (require 'ardentia-usage)
 (require 'ardentia-completed)
+(require 'ardentia-model)
 
 (declare-function ardentia "ardentia" ())
 (declare-function dired "dired" (dirname &optional switches))
@@ -985,6 +986,7 @@ TODO state and priority work like in org-agenda."
     ("," "Priority" ardentia-dashboard-priority)
     ("+" "Priority up (S-<up>)" ardentia-dashboard-priority-up)
     ("-" "Priority down (S-<down>)" ardentia-dashboard-priority-down)
+    ("M" "Model (AI_MODEL)" ardentia-dashboard-set-model)
     ("B" "Bulk action on marked" ardentia-dashboard-bulk-action))
    ("View"
     ("1" "Dashboard" ardentia-dashboard)
@@ -1414,6 +1416,15 @@ Prompt for a letter; SPC removes the cookie."
 Marks are not used; see `ardentia-dashboard-bulk-action'."
   (interactive)
   (ardentia-set-tags-1 (ardentia-dashboard--require-task)))
+
+(defun ardentia-dashboard-set-model (&optional force)
+  "Set or remove the model property of the task at point.
+With a prefix argument FORCE refetch the model list."
+  (interactive "P")
+  (let ((task (ardentia-dashboard--require-task)))
+    (ardentia-set-model-1
+     task (ardentia-model-read
+           (ardentia--task-prop task ardentia-model-property) force))))
 
 (defun ardentia-dashboard-schedule (&optional arg)
   "Schedule the task at point, like `org-agenda-schedule'.

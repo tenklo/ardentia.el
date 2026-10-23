@@ -5409,4 +5409,45 @@ it a top-level task."
   (should-not (keymap-lookup ardentia-dashboard-mode-map "z"))
   (should-not (keymap-lookup ardentia-dashboard-mode-map "Z")))
 
+;;;; Model property (ardentia-model)
+
+(ert-deftest ardentia-test-model-parse ()
+  (should (equal (ardentia-model--parse
+                  "{\"data\":[{\"id\":\"claude-a-1\",\"display_name\":\"A 1\"},{\"id\":\"claude-b-2\"},{\"x\":1}],\"has_more\":false}")
+                 '(("claude-a-1" . "A 1") ("claude-b-2"))))
+  (should-not (ardentia-model--parse "not json"))
+  (should-not (ardentia-model--parse "{\"error\":{\"type\":\"x\"}}")))
+
+(ert-deftest ardentia-test-model-candidates ()
+  ;; Fresh cache: no fetch; aliases first, no duplicates.
+  (let ((ardentia-model--cache (cons (current-time) '(("claude-a-1" . "A 1") ("opus"))))
+        (ardentia-model-aliases '("haiku" "opus")))
+    (cl-letf (((symbol-function 'ardentia-model--fetch) (lambda () (error "fetched"))))
+      (should (equal (ardentia-model-candidates) '("haiku" "opus" "claude-a-1")))
+      (should (equal (ardentia-model-allowed-values "AI_MODEL")
+                     '("haiku" "opus" "claude-a-1" ":ETC")))
+      (should-not (ardentia-model-allowed-values "AI_STATUS"))))
+  ;; Stale cache and a failed fetch: the stale list; no cache: aliases only.
+  (let ((ardentia-model--cache (cons 0 '(("claude-a-1"))))
+        (ardentia-model-aliases '("haiku")))
+    (cl-letf (((symbol-function 'ardentia-model--fetch) #'ignore))
+      (should (equal (ardentia-model-candidates) '("haiku" "claude-a-1")))
+      (setq ardentia-model--cache nil)
+      (should (equal (ardentia-model-candidates) '("haiku"))))))
+
+(ert-deftest ardentia-test-model-set ()
+  (ardentia-test--with-org-file f ardentia-test--prio-org
+    (let ((task (ardentia-test--task :file f :id "prio-1" :tags '("aiready"))))
+      (ardentia-set-model-1 task "fable")
+      (should (string-match-p ":AI_MODEL: +fable\n" (ardentia-test--file-text f)))
+      (ardentia-set-model-1 task nil)
+      (should-not (string-match-p "AI_MODEL" (ardentia-test--file-text f))))
+    (with-current-buffer (find-file-noselect f)
+      (goto-char (point-max))
+      (re-search-backward "^\\* TODO Review one")
+      (forward-line 1)
+      (cl-letf (((symbol-function 'ardentia-model-read) (lambda (&rest _) "haiku")))
+        (ardentia-set-model))
+      (should (equal (org-entry-get (point) "AI_MODEL") "haiku")))))
+
 ;;; ardentia-test.el ends here

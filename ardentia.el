@@ -52,6 +52,7 @@
 (require 'ardentia-modeline)
 (require 'ardentia-alert)
 (require 'ardentia-browse)
+(require 'ardentia-model)
 
 (defun ardentia-refresh-dashboards ()
   "Refresh all ardentia dashboards asynchronously."
@@ -75,7 +76,8 @@
     ("D" "Delegate region/buffer" ardentia-delegate)]
    ["Run"
     :if-derived org-mode
-    ("x" "Run aiready task at point now" ardentia-run-task-at-point)]])
+    ("x" "Run aiready task at point now" ardentia-run-task-at-point)
+    ("M" "Model of task at point (AI_MODEL)" ardentia-set-model)]])
 
 (provide 'ardentia)
 ;;; ardentia.el ends here

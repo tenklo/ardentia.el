@@ -124,7 +124,7 @@ while `ardentia-mode-line-mode` is on.
 
 | Command                  | What it does                                         |
 |--------------------------|------------------------------------------------------|
-| `ardentia`               | Transient menu (d r c k a n D g m, x in org buffers)  |
+| `ardentia`               | Transient menu (d r c k a n D g m, x M in org buffers) |
 | `ardentia-dashboard`     | Task list `*ardentia*` in its dashboard view: trouble, review, running, ready, later |
 | `ardentia-review-inbox`  | The same buffer in its review view: only tasks waiting for review |
 | `ardentia-completed`     | The same buffer in its completed view: all tasks handed back, accepted or not, with tokens and cost |
@@ -141,6 +141,8 @@ while `ardentia-mode-line-mode` is on.
 | `ardentia-stop-task` | Stop the run of a running task (asks first; the claiming computer only) |
 | `ardentia-dashboard-stop` | Dashboard: stop the running task at point |
 | `ardentia-session-stop` | Session transcript: stop the task of this transcript |
+| `ardentia-set-model` | Org buffer: set or remove `AI_MODEL` (the model the runner starts the task with) on the heading at point; offers the aliases and the model IDs available to your login, `C-u` refetches; `org-set-property` completes the same values |
+| `ardentia-dashboard-set-model` | Dashboard (`M`): the same for the task at point |
 | `ardentia-dashboard-priority` | Dashboard: set the priority of the task at point (SPC removes it) |
 | `ardentia-dashboard-priority-up` / `-down` | Dashboard: raise or lower that priority |
 | `ardentia-dashboard-mark`, `-unmark`, `-unmark-all`, `-mark-toggle`, `-mark-all`, `-mark-toggle-all`, `-mark-regexp` | Dashboard: marks, like org-agenda's bulk marks |
