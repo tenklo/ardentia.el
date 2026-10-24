@@ -571,6 +571,27 @@ The key `l' toggles this per task list buffer, in the dashboard view."
 (defvar ardentia-dashboard--refresh-timer nil
   "The one global timer that refreshes visible dashboards, or nil.")
 
+;; The `:set' of `ardentia-dashboard-refresh-interval' runs at once when the
+;; option is already bound, i.e. when the file is loaded again: everything
+;; it calls must be defined above it.
+(defvar ardentia-dashboard-refresh-interval)
+
+(defun ardentia-dashboard--live-buffers ()
+  "Return the live dashboard buffers."
+  (seq-filter (lambda (b) (with-current-buffer b
+                            (derived-mode-p 'ardentia-dashboard-mode)))
+              (buffer-list)))
+
+(defun ardentia-dashboard--refresh-timer-start ()
+  "Start the auto-refresh timer unless disabled or already running."
+  (when (and (integerp ardentia-dashboard-refresh-interval)
+             (> ardentia-dashboard-refresh-interval 0)
+             (not (timerp ardentia-dashboard--refresh-timer)))
+    (setq ardentia-dashboard--refresh-timer
+          (run-at-time ardentia-dashboard-refresh-interval
+                       ardentia-dashboard-refresh-interval
+                       #'ardentia-dashboard--refresh-tick))))
+
 (defun ardentia-dashboard--refresh-timer-restart ()
   "Cancel the auto-refresh timer; start it again when a dashboard is live."
   (when (timerp ardentia-dashboard--refresh-timer)
@@ -1232,12 +1253,6 @@ top."
           (set-window-point win (point))
           (set-window-start win (point-min) t))))))
 
-(defun ardentia-dashboard--live-buffers ()
-  "Return the live dashboard buffers."
-  (seq-filter (lambda (b) (with-current-buffer b
-                            (derived-mode-p 'ardentia-dashboard-mode)))
-              (buffer-list)))
-
 (defun ardentia-dashboard--render-all ()
   "Render all live dashboard buffers."
   (dolist (buf (ardentia-dashboard--live-buffers))
@@ -1293,16 +1308,6 @@ and shows its error in the header line."
        ((ardentia-dashboard--visible-p)
         (ardentia-dashboard-refresh-all)))
     (error (message "ardentia: dashboard timer: %s" (error-message-string err)))))
-
-(defun ardentia-dashboard--refresh-timer-start ()
-  "Start the auto-refresh timer unless disabled or already running."
-  (when (and (integerp ardentia-dashboard-refresh-interval)
-             (> ardentia-dashboard-refresh-interval 0)
-             (not (timerp ardentia-dashboard--refresh-timer)))
-    (setq ardentia-dashboard--refresh-timer
-          (run-at-time ardentia-dashboard-refresh-interval
-                       ardentia-dashboard-refresh-interval
-                       #'ardentia-dashboard--refresh-tick))))
 
 (defun ardentia-dashboard-refresh ()
   "Refresh the dashboard asynchronously; Emacs stays responsive."
