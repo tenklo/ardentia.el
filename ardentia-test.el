@@ -5450,4 +5450,321 @@ it a top-level task."
         (ardentia-set-model))
       (should (equal (org-entry-get (point) "AI_MODEL") "haiku")))))
 
+;;;; Reload
+
+(defconst ardentia-test--reload-source (ardentia-reload--loaded-directory)
+  "Directory of the ardentia under test.
+Every reload test reloads it at the end, so later tests see it again.")
+
+(defun ardentia-test--reload-copy ()
+  "Copy the sources of the ardentia under test into a new directory."
+  (let ((dir (file-name-as-directory (make-temp-file "ardentia-reload-" t))))
+    (dolist (file (directory-files ardentia-test--reload-source t
+                                   "\\`ardentia.*\\.el\\'"))
+      (copy-file file dir))
+    dir))
+
+(defmacro ardentia-test--with-reload-copy (dir &rest body)
+  "Run BODY with DIR bound to a fresh copy of the sources.
+Afterwards the ardentia under test is reloaded and DIR deleted."
+  (declare (indent 1))
+  `(let ((,dir (ardentia-test--reload-copy))
+         (inhibit-message t))
+     (unwind-protect (progn ,@body)
+       (unwind-protect (ardentia-reload ardentia-test--reload-source)
+         (delete-directory ,dir t)))))
+
+(defun ardentia-test--reload-edit (file from to)
+  "Replace the one occurrence of FROM by TO in FILE."
+  (let ((text (ardentia-test--slurp file)))
+    (should (= 1 (with-temp-buffer
+                   (insert text) (goto-char (point-min))
+                   (how-many (regexp-quote from)))))
+    (with-temp-file file (insert (string-replace from to text)))))
+
+(defun ardentia-test--reload-compile (dir &rest files)
+  "Byte-compile FILES in DIR in a separate Emacs."
+  (let ((default-directory dir))
+    (should (eql 0 (apply #'call-process
+                          (expand-file-name invocation-name invocation-directory)
+                          nil nil nil "--batch" "-Q" "-L" "."
+                          "-f" "batch-byte-compile" files)))))
+
+(defun ardentia-test--keymap-variables ()
+  "Return the bound ardentia variables whose value is a keymap."
+  (let (vars)
+    (mapatoms (lambda (sym)
+                (when (and (string-prefix-p "ardentia" (symbol-name sym))
+                           (ardentia-reload--keymap-value-p sym))
+                  (push sym vars))))
+    vars))
+
+(defun ardentia-test--ardentia-timers ()
+  "Return the active timers whose function is an ardentia symbol."
+  (seq-filter (lambda (timer)
+                (let ((fn (timer--function timer)))
+                  (and (symbolp fn)
+                       (string-prefix-p "ardentia" (symbol-name fn)))))
+              (append timer-list timer-idle-list)))
+
+(ert-deftest ardentia-test-reload-order ()
+  (let* ((modules (ardentia-reload--order ardentia-test--reload-source))
+         (names (mapcar (lambda (m) (plist-get m :name)) modules)))
+    (should (equal (car (last names)) "ardentia"))
+    (should (member "ardentia-reload" names))
+    (should-not (member "ardentia-test" names))
+    (dolist (m modules)
+      (dolist (dep (plist-get m :requires))
+        (when (and (member dep names) (not (equal dep "ardentia")))
+          (should (< (seq-position names dep)
+                     (seq-position names (plist-get m :name)))))))
+    ;; A require inside a function is no load-time dependency.
+    (should-not (member "ardentia-dashboard"
+                        (plist-get (seq-find (lambda (m) (equal (plist-get m :name)
+                                                                "ardentia-completed"))
+                                             modules)
+                                   :requires)))))
+
+(ert-deftest ardentia-test-reload-loads-all-modules ()
+  (ardentia-test--with-reload-copy dir
+    (let ((report (ardentia-reload dir))
+          (modules (remove "ardentia-test"
+                           (mapcar #'file-name-base
+                                   (directory-files dir nil "\\`ardentia.*\\.el\\'")))))
+      (should (string-prefix-p "ardentia-reload: " report))
+      (should (string-search dir report))
+      (should (string-search (format "%d modules" (length modules)) report))
+      (dolist (m modules)
+        (should (string-match-p (concat "[( ]" (regexp-quote m) "[ )]") report)))
+      (should-not (string-search "ardentia-test" report))
+      (should (string-search "ardentia-dashboard-mode-map" report))
+      (dolist (fn '(ardentia-dashboard-refresh ardentia--parse-stamp ardentia-reload))
+        (should (string-prefix-p dir (symbol-file fn 'defun))))
+      (should-not (string-prefix-p dir (symbol-file 'ardentia-test--reload-copy 'defun)))
+      (should (equal (ardentia-reload--loaded-directory) dir)))))
+
+(ert-deftest ardentia-test-reload-prefers-current-elc ()
+  (ardentia-test--with-reload-copy dir
+    (ardentia-test--reload-compile dir "ardentia-core.el")
+    (ardentia-reload dir)
+    (should (equal (symbol-file 'ardentia--parse-stamp 'defun)
+                   (expand-file-name "ardentia-core.elc" dir)))
+    (should (equal (symbol-file 'ardentia-dashboard-refresh 'defun)
+                   (expand-file-name "ardentia-dashboard.el" dir)))
+    ;; A source newer than its .elc wins.
+    (set-file-times (expand-file-name "ardentia-core.el" dir)
+                    (time-add (current-time) 100))
+    (ardentia-reload dir)
+    (should (equal (symbol-file 'ardentia--parse-stamp 'defun)
+                   (expand-file-name "ardentia-core.el" dir)))))
+
+(ert-deftest ardentia-test-reload-keymap-in-place ()
+  (ardentia-test--with-timer-sandbox
+   (ardentia-test--with-dashboard
+    (ardentia-test--with-reload-copy dir
+      (let* ((map ardentia-dashboard-mode-map)
+             (parent (keymap-parent map))
+             (file (expand-file-name "ardentia-dashboard.el" dir)))
+        (should (eq parent tabulated-list-mode-map))
+        (ardentia-test--reload-edit
+         file "(\"g\" \"Refresh\" ardentia-dashboard-refresh)"
+         "(\"g\" \"Refresh\" ardentia-dashboard-next-view)")
+        (ardentia-test--reload-edit
+         file "(\"c\" . ardentia-completed)"
+         "(\"C-c z\" . ardentia-dashboard-refresh)")
+        (ardentia-reload dir)
+        (should (eq ardentia-dashboard-mode-map map))
+        (should (eq (keymap-parent map) parent))
+        (let ((bindings (ardentia-test--map-bindings map)))
+          (should (eq (cdr (assoc "g" bindings)) 'ardentia-dashboard-next-view))
+          (should (eq (cdr (assoc "C-c z" bindings)) 'ardentia-dashboard-refresh))
+          (should-not (assoc "c" bindings))
+          ;; Bindings made after the `defvar-keymap' come along.
+          (should (eq (cdr (assoc "<remap> <tabulated-list-sort>" bindings))
+                      'ardentia-dashboard-sort)))
+        (with-current-buffer buf
+          (should (eq (current-local-map) map))
+          (should (eq (key-binding (kbd "g")) 'ardentia-dashboard-next-view))
+          (should (eq (key-binding (kbd "C-c z")) 'ardentia-dashboard-refresh))
+          ;; Inherited keys still work.
+          (should (eq (key-binding (kbd "n"))
+                      (keymap-lookup tabulated-list-mode-map "n"))))
+        ;; The help menu follows the table.
+        (should (member '("g" "Refresh" ardentia-dashboard-next-view)
+                        (mapcan (lambda (g) (copy-sequence (cdr g)))
+                                (plist-get (get 'ardentia-dashboard-menu 'ardentia-menu)
+                                           :groups)))))))))
+
+(ert-deftest ardentia-test-reload-keeps-values-and-buffer-state ()
+  (let ((org-dir ardentia-org-directory)
+        (interval ardentia-dashboard-refresh-interval)
+        (alert ardentia-review-alert)
+        (state ardentia--state))
+    ;; The option is set at top level, as a user does: a `let' binding of a
+    ;; `defcustom' does not survive loading its file again, because
+    ;; `custom-initialize-reset' sets the top-level value.
+    (unwind-protect
+        (let ((ardentia-dashboard--refresh-timer nil))
+          (unwind-protect
+              (ardentia-test--with-dashboard
+               (ardentia-test--with-reload-copy dir
+                 (setq ardentia-org-directory "/tmp/elsewhere/"
+                       ardentia-dashboard-refresh-interval 77
+                       ardentia-review-alert t
+                       ardentia--state (list :tasks nil :host "kept"))
+                 (with-current-buffer buf (setq ardentia-dashboard--show-later t))
+                 (ardentia-reload dir)
+                 (should (equal ardentia-org-directory "/tmp/elsewhere/"))
+                 (should (eql ardentia-dashboard-refresh-interval 77))
+                 (should (eq ardentia-review-alert t))
+                 (should (equal (plist-get ardentia--state :host) "kept"))
+                 (with-current-buffer buf
+                   (should (eq major-mode 'ardentia-dashboard-mode))
+                   (should (eq ardentia-dashboard--show-later t)))))
+            (when (timerp ardentia-dashboard--refresh-timer)
+              (cancel-timer ardentia-dashboard--refresh-timer))))
+      (setq ardentia-org-directory org-dir
+            ardentia-dashboard-refresh-interval interval
+            ardentia-review-alert alert
+            ardentia--state state))))
+
+(declare-function ardentia-zzz-hello nil ())
+
+(ert-deftest ardentia-test-reload-new-module ()
+  (unwind-protect
+      (ardentia-test--with-reload-copy dir
+        (with-temp-file (expand-file-name "ardentia-zzz.el" dir)
+          (insert ";;; ardentia-zzz.el --- Test module -*- lexical-binding: t -*-\n"
+                  "(require 'ardentia-core)\n"
+                  "(defun ardentia-zzz-hello () \"Say zzz.\" 'zzz)\n"
+                  "(provide 'ardentia-zzz)\n"))
+        ;; An earlier module and the entry point both need it.
+        (ardentia-test--reload-edit (expand-file-name "ardentia-actions.el" dir)
+                                    "(require 'ardentia-core)"
+                                    "(require 'ardentia-core)\n(require 'ardentia-zzz)")
+        (ardentia-test--reload-edit (expand-file-name "ardentia.el" dir)
+                                    "(require 'ardentia-model)"
+                                    "(require 'ardentia-model)\n(require 'ardentia-zzz)")
+        (let ((names (mapcar (lambda (m) (plist-get m :name))
+                             (ardentia-reload--order dir))))
+          (should (< (seq-position names "ardentia-zzz")
+                     (seq-position names "ardentia-actions"))))
+        (should (string-search " ardentia-zzz " (ardentia-reload dir)))
+        (should (featurep 'ardentia-zzz))
+        (should (eq (ardentia-zzz-hello) 'zzz))
+        (should (string-prefix-p dir (symbol-file 'ardentia-zzz-hello 'defun))))
+    (fmakunbound 'ardentia-zzz-hello)
+    (setq features (delq 'ardentia-zzz features))))
+
+(ert-deftest ardentia-test-reload-load-path ()
+  ;; A new module required at load time but not at top level is found
+  ;; through `load-path', which holds DIR first during the reload.
+  (unwind-protect
+      (ardentia-test--with-reload-copy dir
+        (with-temp-file (expand-file-name "ardentia-zzz.el" dir)
+          (insert ";;; ardentia-zzz.el --- Test module -*- lexical-binding: t -*-\n"
+                  "(defun ardentia-zzz-hello () \"Say zzz.\" 'zzz)\n"
+                  "(provide 'ardentia-zzz)\n"))
+        (ardentia-test--reload-edit (expand-file-name "ardentia-actions.el" dir)
+                                    "(require 'ardentia-core)"
+                                    "(require 'ardentia-core)\n(when t (require 'ardentia-zzz))")
+        (ardentia-reload dir)
+        (should (eq (ardentia-zzz-hello) 'zzz)))
+    (fmakunbound 'ardentia-zzz-hello)
+    (setq features (delq 'ardentia-zzz features))))
+
+(ert-deftest ardentia-test-reload-failing-module ()
+  (ardentia-test--with-reload-copy dir
+    (let* ((file (expand-file-name "ardentia-browse.el" dir))
+           (vars (ardentia-test--keymap-variables))
+           (objects (mapcar (lambda (v) (cons v (symbol-value v))) vars))
+           (knowledge (ardentia-test--map-bindings ardentia-knowledge-mode-map)))
+      (should (memq 'ardentia-knowledge-mode-map vars))
+      (ardentia-test--reload-edit file "(\"s\" \"Grep all files\" ardentia-knowledge-search)"
+                                  "(\"s\" \"Grep all files\" ignore)")
+      (ardentia-test--reload-edit file "(provide 'ardentia-browse)"
+                                  "(error \"Broken on purpose\")\n(provide 'ardentia-browse)")
+      (let ((err (should-error (ardentia-reload dir))))
+        (should (string-match-p "\\`ardentia-reload: loading ardentia-browse from "
+                                (error-message-string err)))
+        (should (string-search "Broken on purpose" (error-message-string err))))
+      (dolist (o objects)
+        (should (boundp (car o)))
+        (should (eq (symbol-value (car o)) (cdr o))))
+      ;; The keymap of the failed module keeps its old bindings.
+      (should (equal (ardentia-test--map-bindings ardentia-knowledge-mode-map)
+                     knowledge)))))
+
+(ert-deftest ardentia-test-reload-never-prompts ()
+  (ardentia-test--with-timer-sandbox
+   (ardentia-test--with-dashboard
+    (ardentia-test--with-reload-copy dir
+      (let ((prompted (lambda (&rest _) (error "Prompted during reload"))))
+        (cl-letf (((symbol-function 'y-or-n-p) prompted)
+                  ((symbol-function 'yes-or-no-p) prompted)
+                  ((symbol-function 'read-string) prompted)
+                  ((symbol-function 'read-from-minibuffer) prompted)
+                  ((symbol-function 'completing-read) prompted)
+                  ((symbol-function 'read-char) prompted)
+                  ((symbol-function 'read-char-choice) prompted)
+                  ((symbol-function 'read-key) prompted)
+                  ((symbol-function 'read-number) prompted)
+                  ((symbol-function 'read-passwd) prompted)
+                  ((symbol-function 'read-file-name) prompted)
+                  ((symbol-function 'read-directory-name) prompted))
+          (should (string-prefix-p "ardentia-reload: " (ardentia-reload dir)))))))))
+
+(ert-deftest ardentia-test-reload-no-duplicate-timers ()
+  (ardentia-test--with-timer-sandbox
+   (ardentia-test--with-dashboard
+    (let ((ardentia-mode-line-mode t)
+          (ardentia--mode-line-timer nil))
+      (unwind-protect
+          (ardentia-test--with-reload-copy dir
+            (ardentia--mode-line-timer-restart)
+            (should (timerp ardentia-dashboard--refresh-timer))
+            (let ((before (length (ardentia-test--ardentia-timers))))
+              (ardentia-reload dir)
+              (should (= before (length (ardentia-test--ardentia-timers))))
+              (should (memq ardentia-dashboard--refresh-timer timer-list))
+              (should (memq ardentia--mode-line-timer timer-list))
+              (should (string-prefix-p
+                       dir (symbol-file 'ardentia-dashboard--refresh-tick 'defun)))))
+        (when (timerp ardentia--mode-line-timer)
+          (cancel-timer ardentia--mode-line-timer)))))))
+
+(ert-deftest ardentia-test-reload-option-setters-need-no-later-code ()
+  ;; With the timers live, reloading runs the :set of the interval options
+  ;; at once; whatever they call must be defined before them in the file.
+  (ardentia-test--with-timer-sandbox
+   (ardentia-test--with-dashboard
+    (let ((ardentia-mode-line-mode t)
+          (ardentia--mode-line-timer nil))
+      (unwind-protect
+          (ardentia-test--with-reload-copy dir
+            (ardentia--mode-line-timer-restart)
+            (should (timerp ardentia-dashboard--refresh-timer))
+            (dolist (fn '(ardentia-dashboard--live-buffers
+                          ardentia-dashboard--refresh-timer-start
+                          ardentia-dashboard--refresh-timer-restart
+                          ardentia--mode-line-timer-restart))
+              (fmakunbound fn))
+            (ardentia-reload dir)
+            (should (memq ardentia-dashboard--refresh-timer timer-list))
+            (should (memq ardentia--mode-line-timer timer-list)))
+        (when (timerp ardentia--mode-line-timer)
+          (cancel-timer ardentia--mode-line-timer)))))))
+
+(ert-deftest ardentia-test-reload-default-directory ()
+  (let ((empty (make-temp-file "ardentia-reload-empty-" t)))
+    (unwind-protect
+        (ardentia-test--with-reload-copy dir
+          (ardentia-reload dir)
+          (should (equal (ardentia-reload--loaded-directory) dir))
+          (should (string-search dir (call-interactively #'ardentia-reload)))
+          (let ((err (should-error (ardentia-reload empty) :type 'user-error)))
+            (should (string-prefix-p "ardentia-reload: no ardentia.el"
+                                     (error-message-string err)))))
+      (delete-directory empty t))))
+
 ;;; ardentia-test.el ends here

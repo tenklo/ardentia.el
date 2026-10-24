@@ -53,6 +53,7 @@
 (require 'ardentia-alert)
 (require 'ardentia-browse)
 (require 'ardentia-model)
+(require 'ardentia-reload)
 
 (defun ardentia-refresh-dashboards ()
   "Refresh all ardentia dashboards asynchronously."

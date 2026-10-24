@@ -120,6 +120,30 @@ are left out and their sub-headings nest below the section.
 Loading the package has no side effects; the mode-line timer only runs
 while `ardentia-mode-line-mode` is on.
 
+### Reloading after an update
+
+`M-x ardentia-reload` loads all ardentia modules again from the directory
+the package was loaded from (or from the directory given as argument), so
+an update takes effect without restarting Emacs.
+
+- Every `ardentia*.el` there is loaded, the `.elc` when it is not older
+  than the `.el`, dependencies first; new modules need no configuration.
+- Option and variable values stay, including values set with `setq`.
+- Open task list, review and transcript buffers keep working and get the
+  new keys at once: the keymap objects they use are updated in place.
+  Key bindings of your own on ardentia maps survive when they are made in
+  `with-eval-after-load`, which runs again after each load.
+- Running timers (auto-refresh, mode-line counter) keep running, without
+  duplicates.
+- It never prompts, so it can run unattended after a `git pull`.  On a
+  failure it signals an error naming the module and leaves the old keymaps
+  in place.
+
+Some changes still need a restart: new default values of options and
+variables that are already set (the current values win), changed face
+defaults, and changed syntax or abbrev tables of a mode.  A key you bind
+on an ardentia map outside `with-eval-after-load` is lost on reload.
+
 ## Commands
 
 | Command                  | What it does                                         |
@@ -572,6 +596,7 @@ next refresh.
 - `ardentia-usage.el` usage limits and runner pause in the header line
 - `ardentia-modeline.el` mode-line counter
 - `ardentia-alert.el` opt-in alert for new review tasks
+- `ardentia-reload.el` reload all modules in place (`ardentia-reload`)
 - `ardentia.el` entry point and transient menu
 - `ardentia-test.el`, `run-tests` tests
 
