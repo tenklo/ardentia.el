@@ -417,7 +417,10 @@ non-zero exit is reported in the echo area. With the option unset, `d` and
 `w` only say so.
 
 Keys: `TAB` fold or unfold the section at point, `<backtab>` (S-TAB) all
-sections, `n` / `p` next / previous section, `RET` visit the task of the
+sections, `n` / `p` next / previous section, `M-<up>` / `M-<down>` move the section
+at point up / down (the order is kept in `ardentia-stats-section-order`, a
+list of section keys, and saved with `customize-save-variable`; sections not
+listed follow in file order), `RET` visit the task of the
 row at point in another window (`org-id-goto`; rows without an ID only
 say so; on a heading `RET` folds), `d` / `w` choose the days / weeks the
 data cover (presets 7 14 30 90 / 4 12 26 52, any positive whole number is

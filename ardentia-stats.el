@@ -48,6 +48,7 @@
 ;;; Code:
 
 (require 'seq)
+(require 'cl-lib)
 (require 'subr-x)
 (require 'parse-time)
 (require 'ardentia-core)
@@ -74,6 +75,13 @@ Emacs."
   :type '(choice (const :tag "Not set" nil)
                  (repeat :tag "Program and arguments" string)
                  (string :tag "Command line"))
+  :group 'ardentia)
+
+(defcustom ardentia-stats-section-order nil
+  "Keys of the sections in the order you want them, first to last.
+Sections whose key is not listed follow in the order of the file.
+\\<ardentia-stats-mode-map>\\[ardentia-stats-move-section-up] and \\[ardentia-stats-move-section-down] change it and save it."
+  :type '(repeat string)
   :group 'ardentia)
 
 (defface ardentia-stats-heading
@@ -262,6 +270,25 @@ anything else the raw value, nil \"unknown\"."
   (let ((key (alist-get 'key section)))
     (if (and key (not (equal key ""))) (format "%s" key) (format "#%d" index))))
 
+(defun ardentia-stats--ordered (sections order)
+  "Return SECTIONS as (SECTION . INDEX) pairs, sorted by the key list ORDER.
+INDEX is the position in SECTIONS.  Keys missing from ORDER follow in
+their original order."
+  (let* ((pairs (seq-map-indexed (lambda (section i) (cons section i)) sections))
+         (rank (lambda (pair)
+                 (or (seq-position order (ardentia-stats--section-key (car pair) (cdr pair)))
+                     (length order)))))
+    (sort pairs (lambda (a b) (< (funcall rank a) (funcall rank b))))))
+
+(defun ardentia-stats--swap-key (keys key delta)
+  "Return KEYS with KEY moved by DELTA places (-1 up, 1 down), or nil at the end."
+  (let* ((i (seq-position keys key))
+         (j (and i (+ i delta))))
+    (when (and j (>= j 0) (< j (length keys)))
+      (let ((v (vconcat keys)))
+        (cl-rotatef (aref v i) (aref v j))
+        (append v nil)))))
+
 ;;;; Buffer
 
 (defvar-local ardentia-stats--result nil
@@ -330,7 +357,8 @@ anything else the raw value, nil \"unknown\"."
         (insert (propertize (format "%s" note) 'face 'ardentia-stats-note) "\n\n"))
       (if (null sections)
           (insert "The file has no sections.\n")
-        (seq-do-indexed #'ardentia-stats--insert-section sections)))))
+        (dolist (pair (ardentia-stats--ordered sections ardentia-stats-section-order))
+          (ardentia-stats--insert-section (car pair) (cdr pair)))))))
 
 (defun ardentia-stats--position (pos)
   "Return where POS is: (SECTION-KEY LINE-OFFSET COLUMN), or (nil LINE COLUMN)."
@@ -509,6 +537,27 @@ timer starts when the view is opened and stops once its buffer is gone."
     (when key (ardentia-stats--goto-section key))
     (ardentia-stats--render)))
 
+(defun ardentia-stats--move-section (delta)
+  "Move the section at point by DELTA places and save the order."
+  (let* ((key (or (ardentia-stats--section-at-point) (user-error "No section here")))
+         (keys (ardentia-stats--keys))
+         (new (ardentia-stats--swap-key keys key delta)))
+    (unless new (user-error "Section is already at the %s" (if (< delta 0) "top" "bottom")))
+    (customize-save-variable 'ardentia-stats-section-order new)
+    (ardentia-stats--goto-section key)
+    (ardentia-stats--render)
+    (ardentia-stats--goto-section key)))
+
+(defun ardentia-stats-move-section-up ()
+  "Move the section at point up one place; the order is saved."
+  (interactive)
+  (ardentia-stats--move-section -1))
+
+(defun ardentia-stats-move-section-down ()
+  "Move the section at point down one place; the order is saved."
+  (interactive)
+  (ardentia-stats--move-section 1))
+
 (defun ardentia-stats--heading-positions ()
   "Return the positions of the section headings, in order."
   (let ((pos (point-min)) result)
@@ -668,7 +717,9 @@ The buffer follows by itself when the command rewrites the file."
     ("TAB" "Fold/unfold section" ardentia-stats-fold-toggle)
     ("<backtab>" "Fold/unfold all sections" ardentia-stats-fold-all)
     ("n" "Next section" ardentia-stats-next-section)
-    ("p" "Previous section" ardentia-stats-previous-section))
+    ("p" "Previous section" ardentia-stats-previous-section)
+    ("M-<up>" "Move section up" ardentia-stats-move-section-up)
+    ("M-<down>" "Move section down" ardentia-stats-move-section-down))
    ("View"
     ("g" "Refresh" ardentia-stats-refresh)
     ("d" "Days covered" ardentia-stats-set-days)
