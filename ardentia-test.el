@@ -4367,7 +4367,8 @@ Uses `transient-get-suffix' and copes with both suffix shapes (object, or
     (ardentia-review-mode-map ardentia-review-menu 7)
     (ardentia-knowledge-mode-map ardentia-knowledge-menu 5)
     (ardentia-agents-mode-map ardentia-agents-menu 3)
-    (ardentia-session-mode-map ardentia-session-menu 9))
+    (ardentia-session-mode-map ardentia-session-menu 9)
+    (ardentia-stats-mode-map ardentia-stats-menu 8))
   "Each element: (MAP PREFIX MINIMUM-ENTRY-COUNT).")
 
 (defun ardentia-test--map-bindings (map &optional prefix)
@@ -5766,5 +5767,268 @@ Afterwards the ardentia under test is reloaded and DIR deleted."
             (should (string-prefix-p "ardentia-reload: no ardentia.el"
                                      (error-message-string err)))))
       (delete-directory empty t))))
+
+;;;; Agent stats view
+
+(defconst ardentia-test--stats-json
+  "{\"version\": 1,
+ \"generated\": \"2026-10-27T03:40:00+01:00\",
+ \"html\": null,
+ \"note\": \"Made-up numbers for the tests.\",
+ \"sections\": [
+  {\"key\": \"mix\", \"title\": \"Model mix per role\", \"note\": \"share of runs\",
+   \"columns\": [{\"name\": \"Role\", \"type\": \"text\"},
+                 {\"name\": \"Runs\", \"type\": \"int\"},
+                 {\"name\": \"Tokens\", \"type\": \"tokens\"},
+                 {\"name\": \"Cost\", \"type\": \"usd\"},
+                 {\"name\": \"Big\", \"type\": \"percent\"},
+                 {\"name\": \"Time\", \"type\": \"duration\"},
+                 {\"name\": \"Day\", \"type\": \"date\"},
+                 {\"name\": \"Odd\", \"type\": \"weird\"}],
+   \"rows\": [{\"cells\": [\"planner\", 12, 3400000, 1.234, 0.82, 4320, \"2026-10-20\", 7],
+              \"id\": \"stats-id-1\"},
+             {\"cells\": [null, null, null, null, null, null, null, null], \"id\": null}]},
+  {\"key\": \"slow\", \"title\": \"Slowest tasks\", \"note\": null,
+   \"columns\": [{\"name\": \"Task\", \"type\": \"text\"}, {\"name\": \"Time\", \"type\": \"duration\"}],
+   \"rows\": [{\"cells\": [\"alpha\", 240], \"id\": null},
+             {\"cells\": [\"beta\", 42], \"id\": \"stats-id-2\"},
+             {\"cells\": [\"gamma\", 90000], \"id\": null}]}]}"
+  "A made-up stats file.")
+
+(defmacro ardentia-test--with-stats-timer (&rest body)
+  "Run BODY with no stats timer, and cancel whatever it creates."
+  `(let ((ardentia-stats--timer nil)
+         (ardentia-stats-check-interval 5))
+     (unwind-protect (progn ,@body)
+       (when (timerp ardentia-stats--timer)
+         (cancel-timer ardentia-stats--timer)))))
+
+(defmacro ardentia-test--with-stats (file-var json &rest body)
+  "Run BODY in a rendered stats buffer of a temporary file with JSON.
+FILE-VAR is bound to the file; JSON nil means the file does not exist."
+  (declare (indent 2))
+  `(ardentia-test--with-stats-timer
+    (let* ((,file-var (make-temp-file "ardentia-stats-" nil ".json"))
+           (ardentia-stats-file ,file-var)
+           (buf (get-buffer-create " *ardentia-test-stats*")))
+      (unwind-protect
+          (progn
+            (if ,json
+                (with-temp-file ,file-var (insert ,json))
+              (delete-file ,file-var))
+            (with-current-buffer buf
+              (ardentia-stats-mode)
+              (ardentia-stats--render)
+              (goto-char (point-min))
+              ,@body))
+        (kill-buffer buf)
+        (when (file-exists-p ,file-var) (delete-file ,file-var))))))
+
+(defun ardentia-test--stats-goto (regexp)
+  "Move point to the start of the first line matching REGEXP."
+  (goto-char (point-min))
+  (re-search-forward regexp)
+  (beginning-of-line))
+
+(ert-deftest ardentia-test-stats-format-cells ()
+  (should (equal (ardentia-stats--format-cell "planner" "text") "planner"))
+  (should (equal (ardentia-stats--format-cell 12 "int") "12"))
+  (should (equal (ardentia-stats--format-cell 950 "tokens") "950"))
+  (should (equal (ardentia-stats--format-cell 1234 "tokens") "1.2k"))
+  (should (equal (ardentia-stats--format-cell 3400000 "tokens") "3.4M"))
+  (should (equal (ardentia-stats--format-cell 1.234 "usd") "$1.23"))
+  (should (equal (ardentia-stats--format-cell 0.82 "percent") " 82% ██████▌ "))
+  (should (equal (ardentia-stats--format-cell 1 "percent") "100% ████████"))
+  (should (equal (ardentia-stats--format-cell 0 "percent") "  0%         "))
+  (should (equal (ardentia-stats--format-cell 42 "duration") "42s"))
+  (should (equal (ardentia-stats--format-cell 240 "duration") "4m"))
+  (should (equal (ardentia-stats--format-cell 4320 "duration") "1h12m"))
+  (should (equal (ardentia-stats--format-cell 90000 "duration") "1d1h"))
+  (should (equal (ardentia-stats--format-cell "2026-10-20" "date") "2026-10-20"))
+  (should (equal (ardentia-stats--format-cell 7 "weird") "7"))
+  (should (equal (ardentia-stats--format-cell "n/a" "int") "n/a"))
+  (dolist (type '("text" "int" "tokens" "usd" "percent" "duration" "date" "weird"))
+    (should (equal (ardentia-stats--format-cell nil type) "-"))))
+
+(ert-deftest ardentia-test-stats-table-alignment ()
+  (let* ((columns '(((name . "Name") (type . "text")) ((name . "N") (type . "int"))))
+         (long (make-string 60 ?x))
+         (lines (ardentia-stats--table
+                 columns
+                 (list '((cells "a" 5) (id . "some-id"))
+                       `((cells ,long 1234) (id))))))
+    (should (equal (mapcar #'cdr lines) '(nil "some-id" nil)))
+    (should (equal (substring-no-properties (car (nth 0 lines)))
+                   (concat "Name" (make-string 46 ?\s) "     N")))
+    (should (equal (car (nth 1 lines)) (concat "a" (make-string 49 ?\s) "     5")))
+    (should (equal (car (nth 2 lines))
+                   (concat (make-string 49 ?x) "…  1234")))))
+
+(ert-deftest ardentia-test-stats-render ()
+  (ardentia-test--with-stats file ardentia-test--stats-json
+    (should (string-match-p "Made-up numbers for the tests\\." (buffer-string)))
+    (should (string-match-p "^▾ Model mix per role$" (buffer-string)))
+    (should (string-match-p "^  share of runs$" (buffer-string)))
+    (ardentia-test--stats-goto "planner")
+    (should (equal (buffer-substring (point) (line-end-position))
+                   "  planner    12    3.4M  $1.23   82% ██████▌   1h12m  2026-10-20  7"))
+    (forward-line 1)
+    (should (equal (buffer-substring (point) (line-end-position))
+                   "  -           -       -      -              -      -  -           -"))
+    (should (string-match-p "^  gamma  1d1h$" (buffer-string)))
+    (should (string-match-p "generated 2026-10-2[67] [0-9:]+ (.+)"
+                            (ardentia-stats--header-line)))))
+
+(ert-deftest ardentia-test-stats-generated-text ()
+  (let ((now (parse-iso8601-time-string "2026-10-27T03:52:00+01:00")))
+    (should (string-suffix-p "(12 min ago)"
+                             (ardentia-stats--generated-text
+                              "2026-10-27T03:40:00+01:00" now)))
+    (should (string-suffix-p "(2 h ago)"
+                             (ardentia-stats--generated-text
+                              "2026-10-27T00:40:00Z" now)))
+    (should (string-suffix-p "(in the future)"
+                             (ardentia-stats--generated-text
+                              "2026-10-28T03:40:00+01:00" now)))
+    (should (equal (ardentia-stats--generated-text "yesterday" now) "yesterday"))
+    (should (equal (ardentia-stats--generated-text nil now) "unknown"))))
+
+(ert-deftest ardentia-test-stats-missing-file ()
+  (ardentia-test--with-stats file nil
+    (should (string-match-p "No agent stats to show" (buffer-string)))
+    (should (string-search (abbreviate-file-name file) (buffer-string)))
+    (should (string-match-p "file not found" (buffer-string)))
+    (should (string-match-p "external tool" (buffer-string)))
+    (should (string-match-p "no data" (ardentia-stats--header-line)))
+    (let (msg)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (f &rest a) (setq msg (apply #'format f a)))))
+        (ardentia-stats-browse)
+        (ardentia-stats-visit))
+      (should (equal msg "No task on this line")))))
+
+(ert-deftest ardentia-test-stats-bad-json ()
+  (ardentia-test--with-stats file "{\"version\": 1, \"sections\": ["
+    (should (string-match-p "Problem: bad JSON" (buffer-string)))
+    (should-not (string-match-p "▾" (buffer-string)))))
+
+(ert-deftest ardentia-test-stats-not-an-object ()
+  (ardentia-test--with-stats file "[1, 2]"
+    (should (string-match-p "top level is not a JSON object" (buffer-string)))))
+
+(ert-deftest ardentia-test-stats-version-mismatch ()
+  (ardentia-test--with-stats file "{\"version\": 2, \"sections\": []}"
+    (should (string-match-p "format version 2; this ardentia reads version 1 only"
+                            (buffer-string)))))
+
+(ert-deftest ardentia-test-stats-visit-row ()
+  (ardentia-test--with-stats file ardentia-test--stats-json
+    (let (visited msg)
+      (cl-letf (((symbol-function 'org-id-goto) (lambda (id) (push id visited)))
+                ((symbol-function 'message)
+                 (lambda (f &rest a) (setq msg (apply #'format f a)))))
+        (ardentia-test--stats-goto "beta")
+        (ardentia-stats-visit)
+        (should (equal visited '("stats-id-2")))
+        (ardentia-test--stats-goto "alpha")
+        (ardentia-stats-visit)
+        (should (equal msg "No task on this line"))
+        (should (= (length visited) 1))))))
+
+(ert-deftest ardentia-test-stats-browse-without-page ()
+  (ardentia-test--with-stats file ardentia-test--stats-json
+    (let (msg)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (f &rest a) (setq msg (apply #'format f a))))
+                ((symbol-function 'browse-url-of-file)
+                 (lambda (&rest _) (error "Must not be called"))))
+        (ardentia-stats-browse))
+      (should (equal msg "The stats file names no chart page")))))
+
+(ert-deftest ardentia-test-stats-fold ()
+  (ardentia-test--with-stats file ardentia-test--stats-json
+    (ardentia-test--stats-goto "alpha")
+    (ardentia-stats-fold-toggle)
+    (should (looking-at "▸ Slowest tasks (3 rows)"))
+    (should-not (string-match-p "alpha" (buffer-string)))
+    (should (string-match-p "planner" (buffer-string)))
+    (ardentia-stats-visit)                 ; RET on a heading unfolds
+    (should (string-match-p "alpha" (buffer-string)))
+    (ardentia-stats-fold-all)
+    (should-not (string-match-p "planner\\|alpha" (buffer-string)))
+    (should (looking-at "▸ Slowest tasks"))
+    (ardentia-stats-fold-all)
+    (should (string-match-p "planner" (buffer-string)))
+    (should (string-match-p "alpha" (buffer-string)))
+    (ardentia-stats--render)            ; folds survive a refresh
+    (ardentia-stats-fold-toggle)
+    (ardentia-stats-refresh)
+    (should-not (string-match-p "alpha" (buffer-string)))))
+
+(ert-deftest ardentia-test-stats-next-previous-section ()
+  (ardentia-test--with-stats file ardentia-test--stats-json
+    (ardentia-stats-next-section)
+    (should (looking-at "▾ Model mix"))
+    (ardentia-stats-next-section)
+    (should (looking-at "▾ Slowest"))
+    (ardentia-stats-previous-section)
+    (should (looking-at "▾ Model mix"))))
+
+(ert-deftest ardentia-test-stats-refresh-keeps-section ()
+  (ardentia-test--with-stats file ardentia-test--stats-json
+    (ardentia-test--stats-goto "beta")
+    (with-temp-file file
+      (insert (replace-regexp-in-string
+               "\"id\": null}]},"
+               "\"id\": null}, {\"cells\": [\"new\"], \"id\": null}]},"
+               ardentia-test--stats-json)))
+    (ardentia-stats-refresh)
+    (should (string-match-p "^  new " (buffer-string)))
+    (should (looking-at "  beta"))
+    (should (equal (ardentia-stats--section-at-point) "slow"))))
+
+(ert-deftest ardentia-test-stats-tick-rerenders-changed-file ()
+  (ardentia-test--with-stats file ardentia-test--stats-json
+    (ardentia-test--stats-goto "gamma")
+    (ardentia-stats--tick)
+    (should (looking-at "  gamma"))
+    (with-temp-file file
+      (insert (replace-regexp-in-string "gamma" "delta-longer"
+                                        ardentia-test--stats-json)))
+    (ardentia-stats--tick)
+    (should (looking-at "  delta-longer"))))
+
+(ert-deftest ardentia-test-stats-mode-starts-timer ()
+  (ardentia-test--with-stats file ardentia-test--stats-json
+    (should (timerp ardentia-stats--timer))))
+
+(ert-deftest ardentia-test-stats-reopen-starts-timer ()
+  "Opening the existing stats buffer starts a missing timer."
+  (ardentia-test--with-stats-timer
+   (let ((ardentia-stats-file (make-temp-file "ardentia-stats-missing-"))
+         (buf (get-buffer-create "*ardentia-stats*")))
+     (delete-file ardentia-stats-file)
+     (unwind-protect
+         (cl-letf (((symbol-function 'pop-to-buffer-same-window) #'ignore))
+           (with-current-buffer buf (ardentia-stats-mode))
+           (should (timerp ardentia-stats--timer))
+           (ardentia-stats--timer-stop)
+           (ardentia-stats)
+           (should (timerp ardentia-stats--timer))
+           (with-current-buffer buf
+             (should (string-match-p "file not found" (buffer-string)))))
+       (kill-buffer buf)))))
+
+(ert-deftest ardentia-test-stats-tick-stops-without-buffer ()
+  (ardentia-test--with-stats-timer
+   (ardentia-stats--timer-start)
+   (should (timerp ardentia-stats--timer))
+   (cl-letf (((symbol-function 'ardentia-stats--buffers) #'ignore))
+     (ardentia-stats--tick))
+   (should (null ardentia-stats--timer))))
+
+(ert-deftest ardentia-test-stats-wired-into-menus ()
+  (should (eq (ardentia-test--suffix-command 'ardentia "s") 'ardentia-stats))
+  (should (eq (keymap-lookup ardentia-dashboard-mode-map "4") 'ardentia-stats)))
 
 ;;; ardentia-test.el ends here

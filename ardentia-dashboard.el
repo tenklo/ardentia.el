@@ -38,7 +38,8 @@
 ;;   tasks, so this view keeps its own list, fetched when you switch to it
 ;;   and on every refresh while you are in it.
 ;;
-;; The keys 1, 2, 3, ] and [ switch the view.  The filters (host,
+;; The keys 1, 2, 3, ] and [ switch the view; 4 opens the agent stats
+;; (`ardentia-stats'), a buffer of its own.  The filters (host,
 ;; title, later tasks, period, state) belong to the buffer, persist over
 ;; view switches and apply where they make sense; `f' shows them all.
 ;; Refreshing is asynchronous.
@@ -76,6 +77,7 @@
 (require 'ardentia-usage)
 (require 'ardentia-completed)
 (require 'ardentia-model)
+(require 'ardentia-stats)
 
 (declare-function ardentia "ardentia" ())
 (declare-function dired "dired" (dirname &optional switches))
@@ -1013,6 +1015,7 @@ TODO state and priority work like in org-agenda."
     ("1" "Dashboard" ardentia-dashboard)
     ("2" "Review (r)" ardentia-review-inbox)
     ("3" "Completed (c)" ardentia-completed)
+    ("4" "Agent stats (own buffer)" ardentia-stats)
     ("]" "Next view" ardentia-dashboard-next-view)
     ("[" "Previous view" ardentia-dashboard-previous-view)
     ("g" "Refresh" ardentia-dashboard-refresh)

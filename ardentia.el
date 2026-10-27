@@ -34,7 +34,8 @@
 ;;
 ;; Optional in-Emacs alert for new review tasks: `ardentia-review-alert'.
 ;; Read-only browsers for knowledge files and agents: `ardentia-knowledge',
-;; `ardentia-agents'.
+;; `ardentia-agents'.  Read-only dashboards about the team from a JSON
+;; file of an external tool: `ardentia-stats'.
 ;;
 ;; Entry point: `M-x ardentia'.
 
@@ -53,6 +54,7 @@
 (require 'ardentia-alert)
 (require 'ardentia-browse)
 (require 'ardentia-model)
+(require 'ardentia-stats)
 (require 'ardentia-reload)
 
 (defun ardentia-refresh-dashboards ()
@@ -67,6 +69,7 @@
     ("d" "Dashboard" ardentia-dashboard)
     ("r" "Review inbox" ardentia-review-inbox)
     ("c" "Completed tasks" ardentia-completed)
+    ("s" "Agent stats" ardentia-stats)
     ("g" "Refresh" ardentia-refresh-dashboards)
     ("m" "Toggle mode-line counter" ardentia-mode-line-mode)]
    ["Browse"
