@@ -25,7 +25,7 @@
 
 ;;; Commentary:
 
-;; The property `ardentia-model-property' (AI_MODEL) on a task sets the
+;; The property `ardentia-model-property' (AI_MODEL_ORCHESTRATOR) on a task sets the
 ;; model the runner starts the task's orchestrator with.  This file offers
 ;; the models that are available right now: the aliases in
 ;; `ardentia-model-aliases' plus the model IDs the models endpoint
@@ -47,7 +47,7 @@
 (require 'ardentia-actions)
 (require 'ardentia-usage)
 
-(defcustom ardentia-model-property "AI_MODEL"
+(defcustom ardentia-model-property "AI_MODEL_ORCHESTRATOR"
   "Property that names the model of an agent task."
   :type 'string
   :group 'ardentia)

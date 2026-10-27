@@ -1009,7 +1009,7 @@ TODO state and priority work like in org-agenda."
     ("," "Priority" ardentia-dashboard-priority)
     ("+" "Priority up (S-<up>)" ardentia-dashboard-priority-up)
     ("-" "Priority down (S-<down>)" ardentia-dashboard-priority-down)
-    ("M" "Model (AI_MODEL)" ardentia-dashboard-set-model)
+    ("M" "Model (AI_MODEL_ORCHESTRATOR)" ardentia-dashboard-set-model)
     ("B" "Bulk action on marked" ardentia-dashboard-bulk-action))
    ("View"
     ("1" "Dashboard" ardentia-dashboard)

@@ -5425,7 +5425,7 @@ it a top-level task."
         (ardentia-model-aliases '("haiku" "opus")))
     (cl-letf (((symbol-function 'ardentia-model--fetch) (lambda () (error "fetched"))))
       (should (equal (ardentia-model-candidates) '("haiku" "opus" "claude-a-1")))
-      (should (equal (ardentia-model-allowed-values "AI_MODEL")
+      (should (equal (ardentia-model-allowed-values "AI_MODEL_ORCHESTRATOR")
                      '("haiku" "opus" "claude-a-1" ":ETC")))
       (should-not (ardentia-model-allowed-values "AI_STATUS"))))
   ;; Stale cache and a failed fetch: the stale list; no cache: aliases only.
@@ -5440,16 +5440,16 @@ it a top-level task."
   (ardentia-test--with-org-file f ardentia-test--prio-org
     (let ((task (ardentia-test--task :file f :id "prio-1" :tags '("aiready"))))
       (ardentia-set-model-1 task "fable")
-      (should (string-match-p ":AI_MODEL: +fable\n" (ardentia-test--file-text f)))
+      (should (string-match-p ":AI_MODEL_ORCHESTRATOR: +fable\n" (ardentia-test--file-text f)))
       (ardentia-set-model-1 task nil)
-      (should-not (string-match-p "AI_MODEL" (ardentia-test--file-text f))))
+      (should-not (string-match-p "AI_MODEL_ORCHESTRATOR" (ardentia-test--file-text f))))
     (with-current-buffer (find-file-noselect f)
       (goto-char (point-max))
       (re-search-backward "^\\* TODO Review one")
       (forward-line 1)
       (cl-letf (((symbol-function 'ardentia-model-read) (lambda (&rest _) "haiku")))
         (ardentia-set-model))
-      (should (equal (org-entry-get (point) "AI_MODEL") "haiku")))))
+      (should (equal (org-entry-get (point) "AI_MODEL_ORCHESTRATOR") "haiku")))))
 
 ;;;; Reload
 
