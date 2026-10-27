@@ -148,11 +148,12 @@ on an ardentia map outside `with-eval-after-load` is lost on reload.
 
 | Command                  | What it does                                         |
 |--------------------------|------------------------------------------------------|
-| `ardentia`               | Transient menu (d r c k a n D g m, x M in org buffers) |
+| `ardentia`               | Transient menu (d r c s k a n D g m, x M in org buffers) |
 | `ardentia-dashboard`     | Task list `*ardentia*` in its dashboard view: trouble, review, running, ready, later |
 | `ardentia-review-inbox`  | The same buffer in its review view: only tasks waiting for review |
 | `ardentia-completed`     | The same buffer in its completed view: all tasks handed back, accepted or not, with tokens and cost |
 | `ardentia-knowledge`     | Read-only list of the knowledge files in `*ardentia knowledge*`; large files are grepped, not opened |
+| `ardentia-stats`         | Read-only agent stats dashboards in `*ardentia-stats*`, rendered from the JSON file of an external tool (see Agent stats) |
 | `ardentia-agents`        | Read-only list of the agent definitions with model, tools and limits in `*ardentia agents*` |
 | `ardentia-review-task`   | Read-only org view of one task (run report, notes, result sections with their content, open child tasks) |
 | `ardentia-session-open` | Read-only, live-following transcript of the agent session of a task |
@@ -174,7 +175,7 @@ on an ardentia map outside `with-eval-after-load` is lost on reload.
 | `ardentia-dashboard-set-tags`, `-schedule`, `-deadline`, `-todo` | Dashboard: org-agenda's tag, schedule, deadline and TODO state commands on the task at point |
 | `ardentia-dashboard-bulk-action` | Dashboard: apply tag, schedule, deadline, TODO state or priority to all marked tasks, or accept the marked review tasks |
 | `ardentia-review-set-tags`, `-schedule`, `-deadline`, `-todo`, `-priority`, `-priority-up`, `-priority-down` | Review buffer: the same edits on the reviewed task |
-| `ardentia-dashboard-menu`, `ardentia-review-menu`, `ardentia-knowledge-menu`, `ardentia-agents-menu`, `ardentia-session-menu` | `?` in the respective buffer: transient menu listing every key of that buffer (the task list: groups View and Filter among them), grouped, under the same key; `.` opens `ardentia` (also directly in every buffer) |
+| `ardentia-dashboard-menu`, `ardentia-review-menu`, `ardentia-knowledge-menu`, `ardentia-agents-menu`, `ardentia-session-menu`, `ardentia-stats-menu` | `?` in the respective buffer: transient menu listing every key of that buffer (the task list: groups View and Filter among them), grouped, under the same key; `.` opens `ardentia` (also directly in every buffer) |
 
 ### Keys in the task list
 
@@ -186,6 +187,8 @@ Views (all views):
 `1` dashboard (all open queues), `2` review (tasks waiting for review),
 `3` completed (everything handed back, see below), `]` / `[` next /
 previous view (cyclic), `c` and `r` are aliases for completed and review.
+`4` opens the agent stats (`ardentia-stats`), a buffer of its own that is
+not part of the `]` / `[` cycle.
 The header line starts with the views, the active one in brackets. Each view
 remembers the row you were on.
 
@@ -377,6 +380,82 @@ completed, blocked and partial, the summed tokens and cost with
 "(N with usage data)" (only tasks that carry usage properties add to the
 sums), the period, the time of the last refresh and an error if any.
 
+### Agent stats
+
+`ardentia-stats` (`s` in the menu, `4` in the task list) shows dashboards
+about what the agent team does in the read-only buffer `*ardentia-stats*`.
+Ardentia only renders them: an external tool, not part of this package,
+computes the numbers and writes them into one JSON file,
+`ardentia-stats-file` (default `~/.cache/agent-stats/summary.json`). Every
+dashboard is a generic table, so a new dashboard needs no change here.
+
+The header line shows when the file was generated and how long ago, and a
+key hint. The note of the file comes first, then one block per section:
+its title as a heading, its note, and an aligned table (numbers
+right-aligned, text left-aligned and cut at 50 columns with "…"; a null
+cell shows `-`). A missing, unreadable or malformed file, or another
+format version, is said plainly in the buffer with the path; no error is
+signalled and no data is shown that is not in the file.
+
+The buffer is drawn again when the file changes on disk: one timer
+compares its modification time and size every
+`ardentia-stats-check-interval` seconds (default 5; nil or 0 turns it
+off). The timer starts when the view is opened and stops once its buffer
+is gone. Point stays in its section, and folded sections stay folded.
+
+Keys: `TAB` fold or unfold the section at point, `<backtab>` (S-TAB) all
+sections, `n` / `p` next / previous section, `RET` visit the task of the
+row at point in another window (`org-id-goto`; rows without an ID only
+say so; on a heading `RET` folds), `b` open the chart page of the file
+with `browse-url-of-file`, `g` read the file again, `q` quit, `?` menu of
+all keys of this buffer (`ardentia-stats-menu`; `.` opens the global
+menu, as it does directly in the buffer).
+
+#### The stats file (producer interface)
+
+The file is UTF-8 JSON:
+
+```json
+{"version": 1,
+ "generated": "2026-10-27T03:40:00+01:00",
+ "html": "/abs/path/index.html",
+ "note": "one line, may be null",
+ "sections": [
+   {"key": "model-mix", "title": "Model mix per role, last 30 days",
+    "note": "optional one-liner or null",
+    "columns": [{"name": "Role", "type": "text"},
+                {"name": "opus", "type": "percent"}],
+    "rows": [{"cells": ["orchestrator", 0.82], "id": null}]}
+ ]}
+```
+
+- `version`: must be 1; any other value is reported, not rendered.
+- `generated`: ISO 8601 time the file was written; shown in local time
+  with its age. Anything unparsable is shown as is.
+- `html`: absolute path of a page with charts for `b`, or null.
+- `note`: one line shown above the sections, or null.
+- `sections`: shown in this order. `key` identifies the section for
+  folding and for keeping point on refresh (a missing key falls back to
+  the position); `title` is the heading; `note` a line under it or null;
+  `columns` name and type each column; `rows` hold one `cells` array per
+  row, in column order (missing cells count as null), and an `id`: the
+  org ID (`:ID:` property) of the heading the row is about, or null.
+
+Column types and how a cell is shown:
+
+| Type       | JSON value              | Shown as                         |
+|------------|-------------------------|----------------------------------|
+| `text`     | string                  | as is, cut at 50 columns with "…" |
+| `int`      | integer                 | `12`                             |
+| `tokens`   | integer                 | `950`, `12.3k`, `3.4M`           |
+| `usd`      | number                  | `$1.23`                          |
+| `percent`  | number from 0 to 1      | ` 82% ██████▌ ` (an 8-cell bar)  |
+| `duration` | seconds                 | `42s`, `4m`, `1h12m`, `1d1h`     |
+| `date`     | string                  | as is                            |
+
+Every type takes null, shown as `-`. An unknown type, or a value that does
+not fit its type, is shown with `format "%s"`.
+
 ### Knowledge and agent browsers
 
 Both browsers are strictly read-only and read only the head of each file
@@ -515,7 +594,8 @@ to restart the timer),
 `ardentia-usage-limit-state-file`, `ardentia-usage-warn-percent`,
 `ardentia-usage-hide-idle-scoped`,
 `ardentia-review-alert`, `ardentia-review-alert-ding`,
-`ardentia-review-alert-skip-command`.
+`ardentia-review-alert-skip-command`,
+`ardentia-stats-file`, `ardentia-stats-check-interval`.
 
 ### Alert for new review tasks
 
@@ -557,6 +637,9 @@ themes:
   ERROR text in the header line
 - `ardentia-flag-info` (shadow): `opt`, the due flag and `refreshing...`
 - `ardentia-dashboard-meta` (shadow): Host, Age, Cost and File columns
+- `ardentia-stats-heading` (type, bold, like the group rows),
+  `ardentia-stats-note` (shadow), `ardentia-stats-column` (bold): the
+  agent stats view
 
 Change them with `M-x customize-group RET ardentia-faces RET`, or with
 `set-face-attribute` or `custom-set-faces`. Set
@@ -591,6 +674,7 @@ next refresh.
 - `ardentia-dashboard.el` the task list buffer with its dashboard, review and completed views, filters
 - `ardentia-completed.el` data side of the completed view: fetch, period, state, sorting, totals
 - `ardentia-browse.el` read-only browsers for knowledge files and agents
+- `ardentia-stats.el` agent stats view rendered from an external JSON file
 - `ardentia-capture.el` new task and delegate
 - `ardentia-run.el` start the runner on one task now
 - `ardentia-usage.el` usage limits and runner pause in the header line
