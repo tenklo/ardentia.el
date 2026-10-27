@@ -25,8 +25,9 @@
 
 ;;; Commentary:
 
-;; The property `ardentia-model-property' (AI_MODEL_ORCHESTRATOR) on a task sets the
-;; model the runner starts the task's orchestrator with.  This file offers
+;; The properties AI_MODEL_<ROLE> on a task set the model of that agent role
+;; (orchestrator, planner, researcher, worker, qa); the orchestrator's one is
+;; the model the runner starts the task's orchestrator with.  This file offers
 ;; the models that are available right now: the aliases in
 ;; `ardentia-model-aliases' plus the model IDs the models endpoint
 ;; returns for the OAuth login of `ardentia-usage-credentials-file'.  The
@@ -50,6 +51,13 @@
 (defcustom ardentia-model-property "AI_MODEL_ORCHESTRATOR"
   "Property that names the model of an agent task."
   :type 'string
+  :group 'ardentia)
+
+(defcustom ardentia-model-roles
+  '("orchestrator" "planner" "researcher" "worker" "qa")
+  "Agent roles whose model a task can name.
+Role ROLE is the property AI_MODEL_ROLE, upcased."
+  :type '(repeat string)
   :group 'ardentia)
 
 (defcustom ardentia-model-aliases '("haiku" "sonnet" "opus" "fable")
@@ -142,33 +150,48 @@ list.  Return the chosen string, or nil for none."
                   nil nil)))
     (unless (string-empty-p (string-trim choice)) (string-trim choice))))
 
-(defun ardentia-model--apply (model)
-  "Set the model property of the heading at point to MODEL; nil removes it."
-  (if model
-      (org-entry-put nil ardentia-model-property model)
-    (org-entry-delete nil ardentia-model-property)))
+(defun ardentia-model-role-property (role)
+  "Return the property name that holds the model of ROLE."
+  (concat "AI_MODEL_" (upcase role)))
+
+(defun ardentia-model-read-role ()
+  "Read an agent role with completion; return its model property name."
+  (ardentia-model-role-property
+   (completing-read "Role: " ardentia-model-roles nil t nil nil
+                    (car ardentia-model-roles))))
+
+(defun ardentia-model--apply (model &optional property)
+  "Set PROPERTY of the heading at point to MODEL; nil removes it.
+PROPERTY defaults to `ardentia-model-property'."
+  (let ((property (or property ardentia-model-property)))
+    (if model
+        (org-entry-put nil property model)
+      (org-entry-delete nil property))))
 
 ;;;###autoload
 (defun ardentia-set-model (&optional force)
-  "Set or remove the model property of the org heading at point.
+  "Set or remove the model of one role on the org heading at point.
+Ask for the role first, then the model.
 With a prefix argument FORCE refetch the model list."
   (interactive "P")
   (unless (derived-mode-p 'org-mode) (user-error "Not in an org buffer"))
   (org-back-to-heading t)
-  (let ((model (ardentia-model-read
-                (org-entry-get nil ardentia-model-property) force)))
-    (ardentia-model--apply model)
-    (message (if model "%s: %s" "%s removed")
-             ardentia-model-property model)))
+  (let* ((property (ardentia-model-read-role))
+         (model (ardentia-model-read (org-entry-get nil property) force)))
+    (ardentia-model--apply model property)
+    (message (if model "%s: %s" "%s removed") property model)))
 
-(defun ardentia-set-model-1 (task model)
-  "Set the model property of TASK (a task plist) to MODEL; nil removes it."
-  (ardentia--call-on-task task (lambda () (ardentia-model--apply model))))
+(defun ardentia-set-model-1 (task model &optional property)
+  "Set PROPERTY of TASK (a task plist) to MODEL; nil removes it.
+PROPERTY defaults to `ardentia-model-property'."
+  (ardentia--call-on-task task (lambda () (ardentia-model--apply model property))))
 
 (defun ardentia-model-allowed-values (property)
   "Offer the models when PROPERTY is the model property.
 For `org-property-allowed-value-functions'."
-  (when (equal property ardentia-model-property)
+  (when (member property (cons ardentia-model-property
+                               (mapcar #'ardentia-model-role-property
+                                       ardentia-model-roles)))
     ;; ":ETC" lets org accept a model ID that is not in the list.
     (append (ardentia-model-candidates) '(":ETC"))))
 

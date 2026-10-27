@@ -1009,7 +1009,7 @@ TODO state and priority work like in org-agenda."
     ("," "Priority" ardentia-dashboard-priority)
     ("+" "Priority up (S-<up>)" ardentia-dashboard-priority-up)
     ("-" "Priority down (S-<down>)" ardentia-dashboard-priority-down)
-    ("M" "Model (AI_MODEL_ORCHESTRATOR)" ardentia-dashboard-set-model)
+    ("M" "Model of a role (AI_MODEL_<ROLE>)" ardentia-dashboard-set-model)
     ("B" "Bulk action on marked" ardentia-dashboard-bulk-action))
    ("View"
     ("1" "Dashboard" ardentia-dashboard)
@@ -1426,13 +1426,15 @@ Marks are not used; see `ardentia-dashboard-bulk-action'."
   (ardentia-set-tags-1 (ardentia-dashboard--require-task)))
 
 (defun ardentia-dashboard-set-model (&optional force)
-  "Set or remove the model property of the task at point.
+  "Set or remove the model of one role on the task at point.
+Ask for the role first, then the model.
 With a prefix argument FORCE refetch the model list."
   (interactive "P")
-  (let ((task (ardentia-dashboard--require-task)))
+  (let* ((task (ardentia-dashboard--require-task))
+         (property (ardentia-model-read-role)))
     (ardentia-set-model-1
-     task (ardentia-model-read
-           (ardentia--task-prop task ardentia-model-property) force))))
+     task (ardentia-model-read (ardentia--task-prop task property) force)
+     property)))
 
 (defun ardentia-dashboard-schedule (&optional arg)
   "Schedule the task at point, like `org-agenda-schedule'.

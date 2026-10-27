@@ -81,7 +81,7 @@
    ["Run"
     :if-derived org-mode
     ("x" "Run aiready task at point now" ardentia-run-task-at-point)
-    ("M" "Model of task at point (AI_MODEL_ORCHESTRATOR)" ardentia-set-model)]])
+    ("M" "Model of a role on task at point (AI_MODEL_<ROLE>)" ardentia-set-model)]])
 
 (provide 'ardentia)
 ;;; ardentia.el ends here

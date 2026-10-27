@@ -5447,9 +5447,22 @@ it a top-level task."
       (goto-char (point-max))
       (re-search-backward "^\\* TODO Review one")
       (forward-line 1)
-      (cl-letf (((symbol-function 'ardentia-model-read) (lambda (&rest _) "haiku")))
+      (cl-letf (((symbol-function 'ardentia-model-read) (lambda (&rest _) "haiku"))
+                ((symbol-function 'completing-read) (lambda (&rest _) "planner")))
         (ardentia-set-model))
-      (should (equal (org-entry-get (point) "AI_MODEL_ORCHESTRATOR") "haiku")))))
+      (should (equal (org-entry-get (point) "AI_MODEL_PLANNER") "haiku"))
+      (should-not (org-entry-get (point) "AI_MODEL_ORCHESTRATOR")))))
+
+(ert-deftest ardentia-test-model-set-role ()
+  (ardentia-test--with-org-file f ardentia-test--prio-org
+    (let ((task (ardentia-test--task :file f :id "prio-1" :tags '("aiready"))))
+      (ardentia-set-model-1 task "opus" "AI_MODEL_QA")
+      (should (string-match-p ":AI_MODEL_QA: +opus\n" (ardentia-test--file-text f))))))
+
+(ert-deftest ardentia-test-model-roles ()
+  (should (equal (ardentia-model-role-property "qa") "AI_MODEL_QA"))
+  (should (equal (ardentia-model-allowed-values "AI_MODEL_WORKER")
+                 (append (ardentia-model-candidates) '(":ETC")))))
 
 ;;;; Reload
 
