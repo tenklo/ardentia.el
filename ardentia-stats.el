@@ -62,6 +62,20 @@ section \"Agent stats\"."
   :type 'file
   :group 'ardentia)
 
+(defcustom ardentia-stats-render-command nil
+  "Command that writes `ardentia-stats-file' with a given window.
+A list (PROGRAM ARG...) or a string split like a shell command line.
+The view runs it with `--days N --weeks M' appended, N and M being the
+number of days and of weeks the dashboards should cover, when you
+change the window with \\<ardentia-stats-mode-map>\\[ardentia-stats-set-days] or \\[ardentia-stats-set-weeks].  PROGRAM is
+expanded with `expand-file-name' when it names a path, else looked up
+with `executable-find'.  Nil means the window cannot be changed from
+Emacs."
+  :type '(choice (const :tag "Not set" nil)
+                 (repeat :tag "Program and arguments" string)
+                 (string :tag "Command line"))
+  :group 'ardentia)
+
 (defface ardentia-stats-heading
   '((t :inherit font-lock-type-face :weight bold))
   "The title of a section of the agent stats view and its fold indicator.
@@ -300,8 +314,10 @@ anything else the raw value, nil \"unknown\"."
         (dolist (line (ardentia-stats--table (alist-get 'columns section) rows))
           (insert (propertize (concat "  " (car line)) 'ardentia-stats-id (cdr line))
                   "\n"))))
-    (put-text-property start (point) 'ardentia-stats-section key)
-    (insert "\n")))
+    ;; The blank line after an open section belongs to it, so folded
+    ;; sections stand directly under each other.
+    (unless folded (insert "\n"))
+    (put-text-property start (point) 'ardentia-stats-section key)))
 
 (defun ardentia-stats--insert (result file)
   "Insert the view of RESULT, read from FILE, into the current buffer."
@@ -370,16 +386,24 @@ section."
     (dolist (w there)
       (set-window-point (car w) (ardentia-stats--restore (cdr w))))))
 
+(defun ardentia-stats--view-value (key data)
+  "Return the positive integer under KEY in the `view' object of DATA, or nil."
+  (let ((v (alist-get key (alist-get 'view data))))
+    (and (integerp v) (> v 0) v)))
+
 (defun ardentia-stats--header-line ()
-  "Return the header line: generation time, its age and a key hint."
-  (let ((data (plist-get ardentia-stats--result :data)))
+  "Return the header line: window, generation time, its age and a key hint."
+  (let* ((data (plist-get ardentia-stats--result :data))
+         (days (ardentia-stats--view-value 'days data))
+         (weeks (ardentia-stats--view-value 'weeks data)))
     (concat " Agent stats | "
+            (if (and days weeks) (format "%d days, %d weeks | " days weeks) "")
             (if data
                 (concat "generated "
                         (ardentia-stats--generated-text (alist-get 'generated data)
                                                         (current-time)))
               (propertize "no data" 'face 'error))
-            (propertize " | TAB fold, RET visit, b chart, g refresh, ? keys"
+            (propertize " | TAB fold, RET visit, d days, w weeks, b chart, g refresh, ? keys"
                         'face 'ardentia-stats-note))))
 
 ;;;; Automatic refresh
@@ -545,6 +569,92 @@ only say so."
            (message "Chart page not found: %s" html))
           (t (browse-url-of-file html)))))
 
+;;;; Window
+
+(defconst ardentia-stats--default-days 30
+  "Days assumed for the window when the file does not say.")
+
+(defconst ardentia-stats--default-weeks 12
+  "Weeks assumed for the window when the file does not say.")
+
+(defun ardentia-stats--render-argv (days weeks)
+  "Return the command line that renders DAYS and WEEKS, or nil if none is set."
+  (when-let* ((command ardentia-stats-render-command)
+              (words (if (stringp command) (split-string-and-unquote command) command))
+              (program (car words)))
+    (append (list (if (or (file-name-directory program) (string-prefix-p "~" program))
+                      (expand-file-name program)
+                    (or (executable-find program) program)))
+            (cdr words)
+            (list "--days" (number-to-string days) "--weeks" (number-to-string weeks)))))
+
+(defun ardentia-stats--sentinel (days weeks)
+  "Return a process sentinel that reports the outcome of rendering DAYS, WEEKS."
+  (lambda (process _event)
+    (when (memq (process-status process) '(exit signal))
+      (let* ((buffer (process-buffer process))
+             (status (process-exit-status process))
+             (output (and (buffer-live-p buffer)
+                          (with-current-buffer buffer (string-trim (buffer-string))))))
+        (if (and (eq (process-status process) 'exit) (zerop status))
+            (message "Agent stats rendered for %d days, %d weeks" days weeks)
+          (message "ardentia: stats render failed (%s %s)%s"
+                   (process-status process) status
+                   (if (and output (not (string-empty-p output)))
+                       (concat ": " (car (last (split-string output "\n"))))
+                     "")))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(defun ardentia-stats--apply-window (days weeks)
+  "Run `ardentia-stats-render-command' for DAYS and WEEKS, without waiting.
+The buffer follows by itself when the command rewrites the file."
+  (let ((argv (or (ardentia-stats--render-argv days weeks)
+                  (user-error "Set `ardentia-stats-render-command' to change the window"))))
+    (condition-case err
+        (make-process :name "ardentia-stats-render"
+                      :buffer (generate-new-buffer " *ardentia-stats-render*")
+                      :command argv :noquery t :connection-type 'pipe
+                      :sentinel (ardentia-stats--sentinel days weeks))
+      (error (user-error "Cannot run the stats render command: %s"
+                         (error-message-string err))))
+    (message "Rendering agent stats for %d days, %d weeks..." days weeks)))
+
+(defun ardentia-stats--read-count (prompt presets current)
+  "Read a positive integer with PROMPT, offering PRESETS; CURRENT is the default."
+  (let ((text (completing-read prompt (mapcar #'number-to-string presets)
+                               nil nil nil nil (number-to-string current))))
+    (if (string-match-p "\\`[0-9]+\\'" text)
+        (let ((n (string-to-number text)))
+          (if (> n 0) n (user-error "Not a positive whole number: %s" text)))
+      (user-error "Not a positive whole number: %s" text))))
+
+(defun ardentia-stats--current (key default)
+  "Return the window value KEY of the loaded data, or DEFAULT."
+  (or (ardentia-stats--view-value key (plist-get ardentia-stats--result :data))
+      default))
+
+(defun ardentia-stats-set-days ()
+  "Ask for the number of days the dashboards cover and render them again."
+  (interactive)
+  (unless ardentia-stats-render-command
+    (user-error "Set `ardentia-stats-render-command' to change the window"))
+  (let ((weeks (ardentia-stats--current 'weeks ardentia-stats--default-weeks))
+        (days (ardentia-stats--read-count
+               "Days: " '(7 14 30 90)
+               (ardentia-stats--current 'days ardentia-stats--default-days))))
+    (ardentia-stats--apply-window days weeks)))
+
+(defun ardentia-stats-set-weeks ()
+  "Ask for the number of weeks the dashboards cover and render them again."
+  (interactive)
+  (unless ardentia-stats-render-command
+    (user-error "Set `ardentia-stats-render-command' to change the window"))
+  (let ((days (ardentia-stats--current 'days ardentia-stats--default-days))
+        (weeks (ardentia-stats--read-count
+                "Weeks: " '(4 12 26 52)
+                (ardentia-stats--current 'weeks ardentia-stats--default-weeks))))
+    (ardentia-stats--apply-window days weeks)))
+
 ;;;; Keys and mode
 
 (ardentia-define-keys-and-menu
@@ -561,6 +671,8 @@ only say so."
     ("p" "Previous section" ardentia-stats-previous-section))
    ("View"
     ("g" "Refresh" ardentia-stats-refresh)
+    ("d" "Days covered" ardentia-stats-set-days)
+    ("w" "Weeks covered" ardentia-stats-set-weeks)
     ("b" "Chart page in browser" ardentia-stats-browse)
     ("q" "Quit" quit-window))))
 

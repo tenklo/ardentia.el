@@ -389,8 +389,9 @@ computes the numbers and writes them into one JSON file,
 `ardentia-stats-file` (default `~/.cache/agent-stats/summary.json`). Every
 dashboard is a generic table, so a new dashboard needs no change here.
 
-The header line shows when the file was generated and how long ago, and a
-key hint. The note of the file comes first, then one block per section:
+The header line shows the window of the data (days and weeks, when the
+file has a `view` key), when the file was generated and how long ago, and
+a key hint. The note of the file comes first, then one block per section:
 its title as a heading, its note, and an aligned table (numbers
 right-aligned, text left-aligned and cut at 50 columns with "…"; a null
 cell shows `-`). A missing, unreadable or malformed file, or another
@@ -402,11 +403,26 @@ compares its modification time and size every
 `ardentia-stats-check-interval` seconds (default 5; nil or 0 turns it
 off). The timer starts when the view is opened and stops once its buffer
 is gone. Point stays in its section, and folded sections stay folded.
+Folded sections stand directly under each other; the blank line after an
+open section belongs to it.
+
+The window of the data (how many days and weeks the sections cover) is the
+producer's business. If it can be told on its command line, set
+`ardentia-stats-render-command` (default nil) to a list `(PROGRAM ARG...)`
+or a command line string; the view appends `--days N --weeks M` and runs
+it without waiting. A PROGRAM that names a path is expanded with
+`expand-file-name`, a bare name is looked up with `executable-find`. The
+buffer follows by itself when the command rewrites the file, and a
+non-zero exit is reported in the echo area. With the option unset, `d` and
+`w` only say so.
 
 Keys: `TAB` fold or unfold the section at point, `<backtab>` (S-TAB) all
 sections, `n` / `p` next / previous section, `RET` visit the task of the
 row at point in another window (`org-id-goto`; rows without an ID only
-say so; on a heading `RET` folds), `b` open the chart page of the file
+say so; on a heading `RET` folds), `d` / `w` choose the days / weeks the
+data cover (presets 7 14 30 90 / 4 12 26 52, any positive whole number is
+accepted; both values are passed, the other one is taken from `view`, else
+30 days / 12 weeks), `b` open the chart page of the file
 with `browse-url-of-file`, `g` read the file again, `q` quit, `?` menu of
 all keys of this buffer (`ardentia-stats-menu`; `.` opens the global
 menu, as it does directly in the buffer).
@@ -433,6 +449,10 @@ The file is UTF-8 JSON:
 - `generated`: ISO 8601 time the file was written; shown in local time
   with its age. Anything unparsable is shown as is.
 - `html`: absolute path of a page with charts for `b`, or null.
+- `view`: optional, `{"days": N, "weeks": M}` (positive integers): the
+  window the data were computed for; shown in the header line and used as
+  the other value when `d` or `w` changes one of them. Missing or invalid
+  values are ignored.
 - `note`: one line shown above the sections, or null.
 - `sections`: shown in this order. `key` identifies the section for
   folding and for keeping point on refresh (a missing key falls back to

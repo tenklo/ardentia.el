@@ -4368,7 +4368,7 @@ Uses `transient-get-suffix' and copes with both suffix shapes (object, or
     (ardentia-knowledge-mode-map ardentia-knowledge-menu 5)
     (ardentia-agents-mode-map ardentia-agents-menu 3)
     (ardentia-session-mode-map ardentia-session-menu 9)
-    (ardentia-stats-mode-map ardentia-stats-menu 8))
+    (ardentia-stats-mode-map ardentia-stats-menu 10))
   "Each element: (MAP PREFIX MINIMUM-ENTRY-COUNT).")
 
 (defun ardentia-test--map-bindings (map &optional prefix)
@@ -6039,6 +6039,155 @@ FILE-VAR is bound to the file; JSON nil means the file does not exist."
    (cl-letf (((symbol-function 'ardentia-stats--buffers) #'ignore))
      (ardentia-stats--tick))
    (should (null ardentia-stats--timer))))
+
+;; Three sections, the first open, the middle two folded.
+(defconst ardentia-test--stats-three-json
+  "{\"version\": 1, \"view\": {\"days\": 14, \"weeks\": 26}, \"sections\": [
+  {\"key\": \"a\", \"title\": \"Alpha\", \"columns\": [{\"name\": \"X\", \"type\": \"text\"}],
+   \"rows\": [{\"cells\": [\"row-a\"], \"id\": null}]},
+  {\"key\": \"b\", \"title\": \"Bravo\", \"columns\": [{\"name\": \"X\", \"type\": \"text\"}],
+   \"rows\": [{\"cells\": [\"row-b\"], \"id\": null}]},
+  {\"key\": \"c\", \"title\": \"Charlie\", \"columns\": [{\"name\": \"X\", \"type\": \"text\"}],
+   \"rows\": [{\"cells\": [\"row-c\"], \"id\": null}]}]}"
+  "A made-up stats file with three sections and a window.")
+
+(ert-deftest ardentia-test-stats-folded-sections-have-no-blank-line ()
+  (ardentia-test--with-stats file ardentia-test--stats-three-json
+    (setq ardentia-stats--folded '("b" "c"))
+    (ardentia-stats-refresh)
+    (let ((text (buffer-string)))
+      ;; Folded headings stand directly under each other ...
+      (should (string-match-p "▸ Bravo (1 rows)\n▸ Charlie (1 rows)\n?\\'" text))
+      ;; ... while the open section keeps its blank line after the table.
+      (should (string-match-p "row-a\n\n▸ Bravo" text)))
+    ;; The blank line of an open section belongs to it.
+    (ardentia-test--stats-goto "row-a")
+    (forward-line 1)
+    (should (equal (ardentia-stats--section-at-point) "a"))
+    ;; Point keeps its place over a refresh, in an open and in a folded section.
+    (ardentia-test--stats-goto "row-a")
+    (ardentia-stats-refresh)
+    (should (looking-at "  row-a"))
+    (ardentia-stats--goto-section "c")
+    (ardentia-stats-refresh)
+    (should (looking-at "▸ Charlie"))
+    ;; Unfolding the middle one brings its blank line back.
+    (ardentia-stats--goto-section "b")
+    (ardentia-stats-fold-toggle)
+    (should (string-match-p "row-b\n\n▸ Charlie" (buffer-string)))))
+
+(ert-deftest ardentia-test-stats-header-shows-window ()
+  (ardentia-test--with-stats file ardentia-test--stats-three-json
+    (should (string-match-p "14 days, 26 weeks" (ardentia-stats--header-line)))
+    (should (string-match-p "d days, w weeks" (ardentia-stats--header-line))))
+  (ardentia-test--with-stats file ardentia-test--stats-json
+    (should-not (string-match-p "[0-9] days," (ardentia-stats--header-line)))))
+
+(defun ardentia-test--stats-stub (exit-code)
+  "Return a script that logs its arguments to its own .log and exits EXIT-CODE."
+  (let ((script (make-temp-file "ardentia-stats-stub-")))
+    (with-temp-file script
+      (insert "#!/bin/sh\necho \"$@\" > \"$0.log\"\n"
+              (if (zerop exit-code) "" "echo boom >&2\n")
+              (format "exit %d\n" exit-code)))
+    (set-file-modes script #o755)
+    script))
+
+(defun ardentia-test--stats-wait ()
+  "Wait until the render process is gone."
+  (let ((n 0))
+    (while (and (< n 100) (process-list)
+                (seq-some (lambda (p) (equal (process-name p) "ardentia-stats-render"))
+                          (process-list)))
+      (accept-process-output nil 0.05)
+      (setq n (1+ n)))))
+
+(defmacro ardentia-test--with-stats-messages (var &rest body)
+  "Run BODY collecting every `message' text into VAR (a list, newest first)."
+  (declare (indent 1))
+  `(let (,var)
+     (cl-letf (((symbol-function 'message)
+                (lambda (f &rest a) (push (apply #'format f a) ,var))))
+       ,@body)))
+
+(ert-deftest ardentia-test-stats-set-window-runs-command ()
+  (let* ((stub (ardentia-test--stats-stub 0))
+         (ardentia-stats-render-command (list stub "render")))
+    (unwind-protect
+        (ardentia-test--with-stats file ardentia-test--stats-three-json
+          (ardentia-test--with-stats-messages msgs
+            ;; days: the other value (26 weeks) comes from the loaded data
+            (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "90")))
+              (ardentia-stats-set-days))
+            (ardentia-test--stats-wait)
+            (should (equal (with-temp-buffer (insert-file-contents (concat stub ".log"))
+                                             (string-trim (buffer-string)))
+                           "render --days 90 --weeks 26"))
+            ;; weeks: free input, the days (14) come from the data
+            (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "5")))
+              (ardentia-stats-set-weeks))
+            (ardentia-test--stats-wait)
+            (should (equal (with-temp-buffer (insert-file-contents (concat stub ".log"))
+                                             (string-trim (buffer-string)))
+                           "render --days 14 --weeks 5"))
+            (should (member "Agent stats rendered for 14 days, 5 weeks" msgs))))
+      (delete-file stub)
+      (when (file-exists-p (concat stub ".log")) (delete-file (concat stub ".log"))))))
+
+(ert-deftest ardentia-test-stats-set-window-defaults-and-string-command ()
+  "Without a `view' in the data the other value falls back to 30 / 12."
+  (let* ((stub (ardentia-test--stats-stub 0))
+         (ardentia-stats-render-command (concat stub " render")))
+    (unwind-protect
+        (ardentia-test--with-stats file ardentia-test--stats-json
+          (ardentia-test--with-stats-messages msgs
+            (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "7")))
+              (ardentia-stats-set-days))
+            (ardentia-test--stats-wait)
+            (should (equal (with-temp-buffer (insert-file-contents (concat stub ".log"))
+                                             (string-trim (buffer-string)))
+                           "render --days 7 --weeks 12"))))
+      (delete-file stub)
+      (when (file-exists-p (concat stub ".log")) (delete-file (concat stub ".log"))))))
+
+(ert-deftest ardentia-test-stats-set-window-reports-failure ()
+  (let* ((stub (ardentia-test--stats-stub 3))
+         (ardentia-stats-render-command (list stub)))
+    (unwind-protect
+        (ardentia-test--with-stats file ardentia-test--stats-three-json
+          (ardentia-test--with-stats-messages msgs
+            (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "7")))
+              (ardentia-stats-set-days))
+            (ardentia-test--stats-wait)
+            (should (seq-some (lambda (m) (string-match-p "render failed (exit 3): boom" m))
+                              msgs))
+            (should-not (member "Agent stats rendered for 7 days, 26 weeks" msgs))))
+      (delete-file stub)
+      (when (file-exists-p (concat stub ".log")) (delete-file (concat stub ".log"))))))
+
+(ert-deftest ardentia-test-stats-set-window-needs-command-and-valid-number ()
+  (ardentia-test--with-stats file ardentia-test--stats-three-json
+    (let ((ardentia-stats-render-command nil))
+      (let ((err (should-error (ardentia-stats-set-days) :type 'user-error)))
+        (should (string-match-p "ardentia-stats-render-command" (cadr err)))))
+    (let ((ardentia-stats-render-command '("/nonexistent/ardentia-stub")))
+      (dolist (bad '("0" "-3" "x" "2.5" ""))
+        (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) bad)))
+          (should-error (ardentia-stats-set-weeks) :type 'user-error)))
+      ;; A program that cannot be started is reported, not swallowed.
+      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "5")))
+        (should-error (ardentia-stats-set-weeks) :type 'user-error)))))
+
+(ert-deftest ardentia-test-stats-render-argv ()
+  (let ((ardentia-stats-render-command '("~/bin/tool" "render")))
+    (should (equal (ardentia-stats--render-argv 7 4)
+                   (list (expand-file-name "~/bin/tool") "render"
+                         "--days" "7" "--weeks" "4"))))
+  (let ((ardentia-stats-render-command "sh -c"))
+    (should (equal (cdr (ardentia-stats--render-argv 1 2))
+                   '("-c" "--days" "1" "--weeks" "2"))))
+  (let ((ardentia-stats-render-command nil))
+    (should-not (ardentia-stats--render-argv 1 2))))
 
 (ert-deftest ardentia-test-stats-wired-into-menus ()
   (should (eq (ardentia-test--suffix-command 'ardentia "s") 'ardentia-stats))
