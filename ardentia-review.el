@@ -26,10 +26,13 @@
 ;;; Commentary:
 
 ;; `ardentia-review-task' shows one :humanreview: task in a read-only org
-;; buffer: the TODO state and priority, properties, the newest run
-;; report from the LOGBOOK, the notes the human wrote after it, the child
-;; headings (result sections with their content, and open TODOs "for
-;; you") and the original task text.  The buffer's `default-directory'
+;; buffer.  The first thing under its heading is the decision card (see
+;; below); everything else comes after it, folded (TAB unfolds as usual):
+;; file and status (TODO state, priority, tags), properties, the newest
+;; run report from the LOGBOOK, the calls made "in your name" (the
+;; `- Decided in your name:' lines of that report), the notes the human
+;; wrote after it, the child headings (result sections with their content,
+;; and open TODOs "for you") and the original task text.  The buffer's `default-directory'
 ;; is the task file's directory, so relative file links in sections
 ;; work.  Everything is read from the visiting buffer, not from disk.
 ;;
@@ -38,6 +41,25 @@
 ;; the real heading, saves the file when it was unmodified, and renders
 ;; the buffer again, so the note shows under "Your notes after the
 ;; report".  `C-c C-k' cancels.
+;;
+;; The card: for each open child TODO titled "Decide: ..." its question,
+;; the options as `- A: text -- trade-off', the recommendation and what
+;; the task does until the human answers (parsed from the child's body,
+;; see `ardentia--card-parse'); a card that lacks a part shows what there
+;; is plus a line saying so.  A task without such a child shows the
+;; `- For you:' text of its newest run report with its sub-items, or
+;; "nothing to do -- accept?".
+;;
+;; `d' (`ardentia-review-decide') picks an option of a card, with an
+;; optional note: the note "Decision on TITLE: L -- OPTION[; NOTE]" goes to
+;; the task, the Decide child is set DONE and the task goes back to the
+;; agents (see `ardentia-answer.el', which also does the batch answers of
+;; the task list).
+;;
+;; The buffer is a view, not a copy of the task: its heading carries no
+;; TODO keyword and no tags, and the refile, copy, cut and archive
+;; commands of org refuse to work in it (a refiled review buffer once
+;; created duplicate tasks).  `o' visits the real heading.
 ;;
 ;; Tags, schedule, deadline, TODO state and priority of the task are
 ;; edited with the keys of org-agenda (`:', `C-c C-s', `C-c C-d',
@@ -53,6 +75,7 @@
 (require 'ardentia-core)
 (require 'ardentia-actions)
 (require 'ardentia-session)
+(require 'ardentia-answer)
 
 (declare-function ardentia-dashboard-refresh-all "ardentia-dashboard" ())
 (declare-function ardentia-dashboard--live-buffers "ardentia-dashboard" ())
@@ -147,6 +170,140 @@ an unrecognised one."
                 (throw 'done nil))))
           (list :class class :text text :lines (nreverse subs)))))))
 
+;;;; Pure parts: the decision card of a Decide child
+
+(defun ardentia--reduce-links (text)
+  "Return TEXT with org links reduced to their description (or target)."
+  (replace-regexp-in-string
+   "\\[\\[\\([^]]*\\)\\]\\]" "\\1"
+   (replace-regexp-in-string "\\[\\[[^]]*\\]\\[\\([^]]*\\)\\]\\]" "\\1" text)))
+
+(defun ardentia--card-body-lines (text)
+  "Return the lines of the body TEXT without drawers and planning lines.
+A trailing \" \\\\\" (the line break of LOGBOOK items) is stripped."
+  (let (out in-drawer (head t))
+    (dolist (line (split-string (or text "") "\n"))
+      (cond
+       (in-drawer (when (string-match-p "\\`[ \t]*:END:[ \t]*\\'" line)
+                    (setq in-drawer nil)))
+       ((string-match-p "\\`[ \t]*:\\(PROPERTIES\\|LOGBOOK\\):[ \t]*\\'" line)
+        (setq in-drawer t))
+       ((and head (string-match-p
+                   "\\`[ \t]*\\(SCHEDULED\\|DEADLINE\\|CLOSED\\):" line)))
+       (t (unless (string-blank-p line) (setq head nil))
+          (push (replace-regexp-in-string " *\\\\\\\\ *\\'" "" line) out))))
+    (nreverse out)))
+
+(defun ardentia--card-parse (text)
+  "Parse the body TEXT of a Decide child into a plist.
+The body has the top-level items `- Question: TEXT', `- Options' with the
+sub-items `- A: TEXT -- TRADE-OFF', `- Recommendation: L -- REASON' and
+`- Until you answer: TEXT'; other items are background and ignored.  The
+plist has :question, :options (a list of (:letter :text :tradeoff), the
+trade-off \"\" without a ` -- '), :recommendation (a plist :letter
+:reason, or nil without the item; a text that does not start with a
+single capital letter has letter \"\"), :until and :complete.  :complete
+is non-nil when the question and the until text are not empty, there are
+at least two options and the recommended letter is one of them.  Org
+links are reduced to their description."
+  (let* ((lines (ardentia--card-body-lines text))
+         (first (seq-find (lambda (l) (string-match-p "\\` *- " l)) lines))
+         (ind (if first (ardentia--indentation first) 0))
+         (until "") question options rec section)
+    (dolist (line lines)
+      (let ((li (ardentia--indentation line)))
+        (cond
+         ((and (= li ind) (string-match "\\` *- +\\(.*?\\) *\\'" line))
+          (let ((item (match-string 1 line)))
+            (setq section nil)
+            (cond
+             ((string-match "\\`Question: *\\(.*\\)\\'" item)
+              (unless question
+                (setq question (ardentia--reduce-links (match-string 1 item)))))
+             ((string-match-p "\\`Options\\(?::.*\\)?\\'" item)
+              (setq section 'options))
+             ((string-match "\\`Recommendation: *\\(.*\\)\\'" item)
+              (unless rec
+                (let ((r (ardentia--reduce-links (match-string 1 item))))
+                  (setq rec (if (string-match
+                                 "\\`\\([A-Z]\\)\\(?: -- \\(.*\\)\\)?\\'" r)
+                                (list :letter (match-string 1 r)
+                                      :reason (or (match-string 2 r) ""))
+                              (list :letter "" :reason r))))))
+             ((string-match "\\`Until you answer: *\\(.*\\)\\'" item)
+              (when (string-empty-p until)
+                (setq until (ardentia--reduce-links (match-string 1 item))))))))
+         ((and (eq section 'options) (> li ind)
+               (string-match "\\` *- \\([A-Z]\\): \\(.*?\\) *\\'" line))
+          (let* ((letter (match-string 1 line))
+                 (rest (ardentia--reduce-links (match-string 2 line)))
+                 (pos (string-search " -- " rest)))
+            (push (list :letter letter
+                        :text (string-trim (if pos (substring rest 0 pos) rest))
+                        :tradeoff (if pos (string-trim (substring rest (+ pos 4))) ""))
+                  options))))))
+    (setq options (nreverse options)
+          question (or question ""))
+    (list :question question
+          :options options
+          :recommendation rec
+          :until until
+          :complete (and (not (string-empty-p question))
+                         (>= (length options) 2)
+                         rec
+                         (seq-some (lambda (o)
+                                     (equal (plist-get o :letter)
+                                            (plist-get rec :letter)))
+                                   options)
+                         (not (string-empty-p until))
+                         t))))
+
+(defun ardentia--decide-child-p (child)
+  "Return non-nil when CHILD, a child plist, is an open Decide: TODO."
+  (and (plist-get child :todo)
+       (not (plist-get child :done))
+       (string-prefix-p "Decide:" (or (plist-get child :title) ""))))
+
+(defun ardentia--open-decides (children)
+  "Return the open Decide children of CHILDREN that have a :card, in order."
+  (seq-filter (lambda (c) (and (ardentia--decide-child-p c) (plist-get c :card)))
+              children))
+
+(defun ardentia--card-lines (card)
+  "Return the lines (list items) that show the CARD plist."
+  (let ((q (plist-get card :question))
+        (rec (plist-get card :recommendation))
+        (until (plist-get card :until))
+        out)
+    (unless (string-empty-p q) (push (concat "- Question: " q) out))
+    (dolist (o (plist-get card :options))
+      (push (format "- %s: %s%s" (plist-get o :letter) (plist-get o :text)
+                    (if (string-empty-p (plist-get o :tradeoff)) ""
+                      (concat " -- " (plist-get o :tradeoff))))
+            out))
+    (when rec
+      (push (concat "- Recommendation: "
+                    (cond ((string-empty-p (plist-get rec :letter))
+                           (plist-get rec :reason))
+                          ((string-empty-p (plist-get rec :reason))
+                           (plist-get rec :letter))
+                          (t (format "%s -- %s" (plist-get rec :letter)
+                                     (plist-get rec :reason)))))
+            out))
+    (unless (string-empty-p until) (push (concat "- Until you answer: " until) out))
+    (unless (plist-get card :complete)
+      (push "- (card incomplete -- see the Decide child)" out))
+    (nreverse out)))
+
+(defun ardentia--decided-in-name (report-lines)
+  "Return the \"Decided in your name\" texts of REPORT-LINES, newest report.
+Every sub-item `- Decided in your name: TEXT' counts; links are reduced."
+  (let (out)
+    (dolist (l report-lines)
+      (when (string-match "\\` *- +Decided in your name: *\\(.*?\\) *\\'" l)
+        (push (ardentia--reduce-links (match-string 1 l)) out)))
+    (nreverse out)))
+
 ;;;; Pure parts: children
 
 (defun ardentia--classify-children (children)
@@ -161,12 +318,26 @@ Return a plist: :results, the children without TODO keyword, and
 
 ;;;; Result section content
 
-(defun ardentia--section-content (content child-level target-level)
+(defun ardentia--plain-heading-text (text keywords)
+  "Return the heading TEXT (after the stars) without TODO keyword and tags.
+KEYWORDS are the TODO keywords to drop; nil means TODO and DONE."
+  (let ((text (replace-regexp-in-string
+               "[ \t]+:[[:alnum:]_@#%:]+:[ \t]*\\'" "" text)))
+    (if (string-match (concat "\\` \\(?:"
+                              (regexp-opt (or keywords '("TODO" "DONE")))
+                              "\\)\\(?: \\|\\'\\)")
+                      text)
+        (concat " " (substring text (match-end 0)))
+      text)))
+
+(defun ardentia--section-content (content child-level target-level
+                                          &optional keywords)
   "Return the lines of CONTENT, a result section's subtree text, to render.
 CHILD-LEVEL is the org level of the section heading, TARGET-LEVEL the
 level it gets in the review buffer.  Property and LOGBOOK drawers and
 planning lines directly under a heading are dropped, a heading of
-level L becomes level TARGET-LEVEL + (L - CHILD-LEVEL), and leading
+level L becomes level TARGET-LEVEL + (L - CHILD-LEVEL) without its TODO
+keyword (one of KEYWORDS, default TODO and DONE) and tags, and leading
 and trailing blank lines are trimmed.  Return nil when nothing is left."
   (let (out in-drawer (after-heading t))
     (dolist (line (and content (split-string content "\n")))
@@ -183,7 +354,8 @@ and trailing blank lines are trimmed.  Return nil when nothing is left."
                        (max 1 (+ target-level
                                  (- (length (match-string 1 line)) child-level)))
                        ?*)
-                      (or (match-string 2 line) ""))
+                      (ardentia--plain-heading-text (or (match-string 2 line) "")
+                                                    keywords))
               out)
         (setq after-heading t))
        (t (push line out)
@@ -205,6 +377,14 @@ and trailing blank lines are trimmed.  Return nil when nothing is left."
           (buffer-substring-no-properties (point) end)
         ""))))
 
+(defun ardentia-review--own-body ()
+  "Return the text of the heading at point up to the next heading."
+  (save-excursion
+    (beginning-of-line)
+    (let ((end (save-excursion (outline-next-heading) (point))))
+      (forward-line 1)
+      (if (< (point) end) (buffer-substring-no-properties (point) end) ""))))
+
 (defun ardentia-review--children ()
   "Return the direct children of the heading at point as plists."
   (let ((level (org-current-level)) result)
@@ -220,6 +400,11 @@ and trailing blank lines are trimmed.  Return nil when nothing is left."
                              :done (and todo (member todo org-done-keywords) t)
                              :tags (org-get-tags nil t)
                              :id (org-entry-get nil "ID"))
+                       (when (and todo (not (member todo org-done-keywords))
+                                  (string-prefix-p
+                                   "Decide:" (org-get-heading t t t t)))
+                         (list :card (ardentia--card-parse
+                                      (ardentia-review--own-body))))
                        (unless todo
                          (list :level (org-current-level)
                                :content (ardentia-review--subtree-content))))
@@ -249,12 +434,18 @@ Return a plist; signal a `user-error' when the heading is missing."
                        (buffer-substring-no-properties
                         (min (point) entry-end) entry-end)))))
          (append (list :file file :id id :title title :tags tags :props props
+                       :keywords org-todo-keywords-1
                        :todo (org-get-todo-state)
                        ;; Explicit cookie only; no default priority.
                        :priority (nth 3 (org-heading-components))
                        :body body)
                  log
-                 (ardentia--classify-children (ardentia-review--children))))))))
+                 (let ((kids (ardentia--classify-children
+                              (ardentia-review--children))))
+                   (append kids
+                           (list :decides
+                                 (ardentia--open-decides
+                                  (plist-get kids :for-you)))))))))))
 
 ;;;; The "For you" class of review rows
 
@@ -291,28 +482,63 @@ and AI_SESSION).  Any error gives nil and is not cached."
         (format "[[id:%s][%s]]" (plist-get child :id) title)
       title)))
 
+(defun ardentia-review--status-text (info)
+  "Return the text of the Status line for the review data INFO."
+  (let ((todo (plist-get info :todo))
+        (prio (plist-get info :priority))
+        (tags (plist-get info :tags))
+        (agents (cdr (assoc "AI_STATUS" (plist-get info :props)))))
+    (concat (or todo "no TODO keyword")
+            (if prio (format ", priority %c" prio) "")
+            (if tags (format ", tags: %s" (string-join tags " ")) "")
+            (if agents (format ", agents: %s" agents) ""))))
+
+(defun ardentia-review--card-section (info)
+  "Return the lines of the card of the review data INFO.
+That is one block per open Decide child, else the \"For you\" text of
+the newest run report, else a hint."
+  (let ((decides (plist-get info :decides)) (i 0) out)
+    (if decides
+        (dolist (c decides)
+          (setq i (1+ i))
+          (when (or (cdr decides) (not (plist-get (plist-get c :card) :complete)))
+            (push (if (cdr decides)
+                      (format "- Decision %d of %d: %s" i (length decides)
+                              (ardentia-review--link c))
+                    (format "- Decision: %s" (ardentia-review--link c)))
+                  out))
+          (dolist (l (ardentia--card-lines (plist-get c :card)))
+            (push (if (cdr decides) (concat "  " l) l) out)))
+      (let ((fy (ardentia--for-you (plist-get info :report))))
+        (cond
+         ((null fy)
+          (push "- (no \"For you\" line in the run report -- see Latest run report)"
+                out))
+         ((eq (plist-get fy :class) 'nothing)
+          (push "- nothing to do -- accept?" out))
+         (t (push (format "- For you: %s" (plist-get fy :text)) out)
+            (dolist (l (plist-get fy :lines))
+              (push (concat "  - " l) out))))))
+    (nreverse out)))
+
 (defun ardentia-review--render-string (info)
-  "Return the org text for the review data INFO."
+  "Return the org text for the review data INFO.
+The heading is the plain title (no TODO keyword, no tags: the buffer is
+a view and must never look like a task); the card comes first, the
+other sections after it."
   (with-temp-buffer
-    (let ((tags (plist-get info :tags))
-          (todo (plist-get info :todo))
-          (prio (plist-get info :priority))
-          (agents (cdr (assoc "AI_STATUS" (plist-get info :props)))))
-      (insert "* "
-              (if todo (concat todo " ") "")
-              (if prio (format "[#%c] " prio) "")
-              (plist-get info :title)
-              (if tags (format " :%s:" (string-join tags ":")) "") "\n")
-      (insert (format "- File :: [[file:%s][%s]]\n"
-                      (abbreviate-file-name (plist-get info :file))
-                      (file-name-nondirectory (plist-get info :file))))
-      (insert (format "- Status :: %s%s\n"
-                      (or todo "no TODO keyword")
-                      (if agents (format ", agents: %s" agents) "")))
-      (when-let* ((fy (ardentia--for-you (plist-get info :report))))
-        (insert (format "- For you :: %s\n" (plist-get fy :text)))
-        (dolist (l (plist-get fy :lines))
-          (insert "  - " l "\n"))))
+    (insert "* " (plist-get info :title) "\n")
+    (dolist (l (ardentia-review--card-section info))
+      (insert l "\n"))
+    (insert "** File and status\n")
+    (insert (format "- File :: [[file:%s][%s]]\n"
+                    (abbreviate-file-name (plist-get info :file))
+                    (file-name-nondirectory (plist-get info :file))))
+    (insert (format "- Status :: %s\n" (ardentia-review--status-text info)))
+    (when-let* ((fy (ardentia--for-you (plist-get info :report))))
+      (insert (format "- For you :: %s\n" (plist-get fy :text)))
+      (dolist (l (plist-get fy :lines))
+        (insert "  - " l "\n")))
     (insert "** Agent properties\n")
     (when-let* ((usage (ardentia--usage-line (plist-get info :props))))
       (insert "- Usage :: " usage "\n"))
@@ -324,6 +550,10 @@ and AI_SESSION).  Any error gives nil and is not cached."
     (if (plist-get info :report)
         (insert (string-join (plist-get info :report) "\n") "\n")
       (insert "- no AI-Lauf report found\n"))
+    (when-let* ((decided (ardentia--decided-in-name (plist-get info :report))))
+      (insert "** Decided in your name\n")
+      (dolist (d decided)
+        (insert "- " d "\n")))
     (when (plist-get info :notes)
       (insert "** Your notes after the report\n")
       (dolist (note (plist-get info :notes))
@@ -333,7 +563,8 @@ and AI_SESSION).  Any error gives nil and is not cached."
         (dolist (c (plist-get info :results))
           (insert "*** " (ardentia-review--link c) "\n")
           (dolist (l (ardentia--section-content
-                      (plist-get c :content) (or (plist-get c :level) 2) 3))
+                      (plist-get c :content) (or (plist-get c :level) 2) 3
+                      (plist-get info :keywords)))
             (insert l "\n")))
       (insert "- none\n"))
     (insert "** For you\n")
@@ -380,11 +611,13 @@ Also bound: C-c C-q (tags), S-<up> and S-<down> (priority up and down)."
   :groups
   (("Review"
     ("a" "Accept" ardentia-review-accept)
+    ("d" "Decide (pick an option of the card)" ardentia-review-decide)
     ("s" "Send back" ardentia-review-send-back)
     ("y" "Let agents do child TODO" ardentia-review-yourself))
    ("Task"
     ("o" "Visit heading" ardentia-review-visit)
     ("t" "Transcript" ardentia-review-transcript)
+    ("C-c A" "Agent shell" ardentia-review-agent-shell)
     ("z" "Add note to task" ardentia-review-add-note))
    ("Edit"
     (":" "Tags" ardentia-review-set-tags)
@@ -403,6 +636,30 @@ Also bound: C-c C-q (tags), S-<up> and S-<down> (priority up and down)."
    ("S-<up>" . ardentia-review-priority-up)
    ("S-<down>" . ardentia-review-priority-down)))
 
+(defun ardentia-review-refuse-copy ()
+  "Refuse to refile, copy, cut or archive in a review buffer.
+The buffer is a view of a task, not the task."
+  (interactive)
+  (user-error "Review buffer is a view; use o to visit the real heading"))
+
+(defconst ardentia-review--refused-commands
+  '(org-refile org-refile-copy org-copy-subtree org-cut-subtree
+    org-archive-subtree org-archive-subtree-default
+    org-archive-subtree-default-with-confirmation
+    org-archive-to-archive-sibling org-toggle-archive-tag)
+  "Org commands that `ardentia-review-mode' remaps to a refusal.")
+
+(defun ardentia-review--refuse-advice (&rest _)
+  "Refuse the advised org command in a review buffer."
+  (when (derived-mode-p 'ardentia-review-mode)
+    (ardentia-review-refuse-copy)))
+
+(dolist (cmd ardentia-review--refused-commands)
+  ;; The remap covers the keys, the advice covers M-x and calls from code.
+  (keymap-set ardentia-review-mode-map (format "<remap> <%s>" cmd)
+              #'ardentia-review-refuse-copy)
+  (advice-add cmd :before #'ardentia-review--refuse-advice))
+
 (define-derived-mode ardentia-review-mode org-mode "Ardentia-Review"
   "Read-only org view of one task waiting for review.
 
@@ -414,6 +671,15 @@ Also bound: C-c C-q (tags), S-<up> and S-<down> (priority up and down)."
   (setq ardentia--current-task-function (lambda () ardentia-review--task)))
 
 (declare-function ardentia "ardentia" ())
+
+(defun ardentia-review--fold ()
+  "Fold every section below the card, so the first screen is the card."
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward "^\\*\\* " nil t)
+        (org-fold-subtree t)
+        (goto-char (line-end-position))))))
 
 (defun ardentia-review-render ()
   "Render the task of the current review buffer again."
@@ -427,8 +693,11 @@ Also bound: C-c C-q (tags), S-<up> and S-<down> (priority up and down)."
     (setq ardentia-review--info info)
     (erase-buffer)
     (insert text)
+    (ardentia-review--fold)
     (goto-char (point-min))
     (forward-line (1- line))
+    (when (invisible-p (point))
+      (outline-back-to-heading t))
     (set-buffer-modified-p nil)))
 
 ;;;###autoload
@@ -489,6 +758,58 @@ Pick among the open children tagged humanreview; replace the tag by aiready."
                            (plist-get ardentia-review--task :id)
                            title note)
       (ardentia-review-render))))
+
+(defun ardentia-review-agent-shell ()
+  "Open the latest session of this review buffer's task in agent-shell."
+  (interactive)
+  (ardentia-session-open-agent-shell ardentia-review--task))
+
+(defun ardentia-review--option-label (option rec)
+  "Return the completion label of OPTION; REC is the recommended letter."
+  (format "%s: %s%s%s" (plist-get option :letter) (plist-get option :text)
+          (if (string-empty-p (plist-get option :tradeoff)) ""
+            (concat " -- " (plist-get option :tradeoff)))
+          (if (equal rec (plist-get option :letter)) "  (recommended)" "")))
+
+(defun ardentia-review-decide ()
+  "Pick an option of the card and hand the task back to the agents.
+With several open Decide children ask which one first.  Ask for an
+optional note, show what will happen and ask once.  The note \"Decision
+on TITLE: L -- OPTION[; NOTE]\" goes to the task, the Decide child is set
+DONE and humanreview is replaced by aiready (not while the task is
+running)."
+  (interactive)
+  (let ((decides (plist-get ardentia-review--info :decides)))
+    (unless decides (user-error "No open Decide child with a card"))
+    (let* ((sub (if (cdr decides)
+                    (let* ((titles (mapcar (lambda (c) (plist-get c :title))
+                                           decides))
+                           (pick (completing-read "Decide: " titles nil t nil nil
+                                                  (car titles))))
+                      (1+ (seq-position titles pick)))
+                  1))
+           (card (plist-get (nth (1- sub) decides) :card))
+           (rec (plist-get (plist-get card :recommendation) :letter)))
+      (unless (plist-get card :options)
+        (user-error "Card incomplete -- see the Decide child"))
+      (let* ((labels (mapcar (lambda (o) (ardentia-review--option-label o rec))
+                             (plist-get card :options)))
+             (pick (completing-read "Option: " labels nil t nil nil
+                                    (seq-find (lambda (l) (string-prefix-p
+                                                           (concat rec ":") l))
+                                              labels)))
+             (letter (substring pick 0 1))
+             (note (string-trim (read-string "Note (optional): ")))
+             (task (list :file (plist-get ardentia-review--task :file)
+                         :id (plist-get ardentia-review--task :id)
+                         :title (plist-get ardentia-review--task :title)))
+             (steps (ardentia-answer-resolve
+                     (list (list :n 1 :sub sub :kind 'decide :letter letter
+                                 :text note))
+                     (list (list 1 :task task :info ardentia-review--info))))
+             (result (ardentia-answer-execute steps)))
+        (when (and result (> (plist-get result :done) 0))
+          (quit-window t))))))
 
 ;;;; Adding a note to the task
 

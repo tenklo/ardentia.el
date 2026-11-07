@@ -52,6 +52,12 @@
 ;; tasks.  See `ardentia-dashboard-group-reviews' and
 ;; `ardentia-dashboard-group-min'.
 ;;
+;; The review rows carry a row number in the padding area in front of the
+;; row, next to the mark (stable for one render).  `A' in the review view
+;; (`C-c C-a' in any view) reads one string that answers several of them,
+;; like "1 B, 2 ok, 3: please redo, 4 skip", see `ardentia-answer.el'; `A'
+;; in the other views stays the agent shell, which is `C-c A' everywhere.
+;;
 ;; Tasks are marked, tagged, scheduled and changed with the keys of
 ;; org-agenda: `m' marks, `:' sets tags, `C-c C-s' schedules, `B' applies
 ;; a bulk action to the marked tasks.  Marks are kept as task keys, so
@@ -72,6 +78,7 @@
 (require 'ardentia-core)
 (require 'ardentia-actions)
 (require 'ardentia-review)
+(require 'ardentia-answer)
 (require 'ardentia-session)
 (require 'ardentia-run)
 (require 'ardentia-usage)
@@ -115,6 +122,9 @@ marks.")
 (defvar-local ardentia-dashboard--hidden nil
   "The tasks the last render left out because their group is folded.
 Marks on them stay, so pruning marks and bulk actions look here too.")
+
+(defvar-local ardentia-dashboard--row-numbers nil
+  "Alist (N . TASK) of the numbered review rows of the last render.")
 
 (defvar-local ardentia-dashboard--group-keys nil
   "The keys of all groups (and parent tasks) of the last render.")
@@ -987,9 +997,13 @@ TODO state and priority work like in org-agenda."
     ("RET" "Open" ardentia-dashboard-enter)
     ("o" "Visit heading" ardentia-dashboard-visit)
     ("t" "Transcript" ardentia-dashboard-transcript)
-    ("A" "Agent shell" ardentia-dashboard-agent-shell))
+    ("A" "Agent shell; Answer several (Review view)"
+     ardentia-dashboard-answer-or-shell)
+    ("C-c A" "Agent shell" ardentia-dashboard-agent-shell))
    ("Review and run"
     ("a" "Accept (marked)" ardentia-dashboard-accept)
+    ("C-c C-a" "Answer several (numbers of the list)"
+     ardentia-dashboard-answer-several)
     ("s" "Send back" ardentia-dashboard-send-back)
     ("x" "Run now" ardentia-dashboard-run)
     ("k" "Stop" ardentia-dashboard-stop))
@@ -1178,6 +1192,48 @@ in every render.  A new format resets the sort key."
   "Return the default host of the hosts file, or nil."
   (plist-get (ardentia-hosts) :default-host))
 
+(defun ardentia-dashboard--number-entries (entries)
+  "Number the open review rows of ENTRIES; return ENTRIES.
+`ardentia-dashboard--row-numbers' records which task has which number;
+the number is shown in the padding area of the row, see
+`ardentia-dashboard--row-tag'.  Group headers, merges and tasks of other
+queues are not numbered."
+  (let ((n 0) numbered)
+    (dolist (entry entries)
+      (when (ardentia-dashboard--numbered-p entry)
+        (setq n (1+ n))
+        (push (cons n (car entry)) numbered)))
+    (setq ardentia-dashboard--row-numbers (nreverse numbered))
+    entries))
+
+(defun ardentia-dashboard--number-width ()
+  "Return the width of the row numbers of the last render, 0 without any."
+  (if ardentia-dashboard--row-numbers
+      (max 2 (length (number-to-string (length ardentia-dashboard--row-numbers))))
+    0))
+
+(defun ardentia-dashboard--row-tag (id marked)
+  "Return the text of the padding area of the row ID.
+That is the mark when MARKED (else a space), then the row number of ID
+when it has one."
+  (let* ((width (ardentia-dashboard--number-width))
+         (num (car (rassq id ardentia-dashboard--row-numbers))))
+    (concat (if marked
+                (ardentia-dashboard--maybe-face ">" 'ardentia-mark)
+              " ")
+            (if (and num (> width 0))
+                (ardentia-dashboard--maybe-face
+                 (concat (string-pad (number-to-string num) width nil t) " ")
+                 'ardentia-dashboard-meta)
+              ""))))
+
+(defun ardentia-dashboard--numbered-p (entry)
+  "Return non-nil when the entry ENTRY is an open review task row."
+  (let ((id (car entry)))
+    (and id (not (ardentia-dashboard--non-task-p id))
+         (eq (plist-get id :queue) 'review)
+         (not (plist-get id :done)))))
+
 (defun ardentia-dashboard--view-entries (view now)
   "Return `tabulated-list-entries' for VIEW at NOW from the current filters.
 In the completed view also record the totals for the header line."
@@ -1194,10 +1250,12 @@ In the completed view also record the totals for the header line."
           (setq ardentia-dashboard--completed-summary
                 (ardentia-completed--summary
                  (ardentia-completed--select tasks period state now)))
+          (setq ardentia-dashboard--row-numbers nil)
           (ardentia-completed--entries tasks period state now))
       (let ((ardentia--due-display-override (ardentia-dashboard--due-display))
             (dashboard (eq view 'dashboard)))
-        (ardentia-dashboard--entries
+        (ardentia-dashboard--number-entries
+         (ardentia-dashboard--entries
          (ardentia-dashboard--filter-tasks
           (plist-get ardentia--state :tasks) host title default-host tags)
          (and (eq view 'review) 'review)
@@ -1206,7 +1264,7 @@ In the completed view also record the totals for the header line."
          (and dashboard
               (ardentia-dashboard--filter-merges
                (plist-get ardentia--state :merges)
-               host title (plist-get ardentia--state :host) tags)))))))
+               host title (plist-get ardentia--state :host) tags))))))))
 
 (defun ardentia-dashboard--goto-key (key)
   "Move point to the row with the row KEY; return nil and stay when none."
@@ -1241,6 +1299,12 @@ top."
     (setq tabulated-list-printer #'ardentia-dashboard--print-entry)
     (setq tabulated-list-entries (ardentia-dashboard--view-entries
                                   view (current-time)))
+    ;; Room for the row numbers of the review rows.
+    (let ((padding (let ((w (ardentia-dashboard--number-width)))
+                     (if (> w 0) (+ w 2) 1))))
+      (unless (= padding tabulated-list-padding)
+        (setq tabulated-list-padding padding)
+        (tabulated-list-init-header)))
     ;; The original order of `tabulated-list-sort' refers to the old entries.
     (setq tabulated-list--original-order nil)
     (ardentia-dashboard--prune-marks)
@@ -1472,9 +1536,10 @@ A running merge and a group header are not tasks.  With STRICT signal a
           (t (ardentia--task-key id)))))
 
 (defun ardentia-dashboard--put-mark (on)
-  "Show the mark of the row at point when ON, else clear it."
+  "Show the mark of the row at point when ON, else clear it.
+The row number stays."
   (tabulated-list-put-tag
-   (if on (ardentia-dashboard--maybe-face ">" 'ardentia-mark) " "))
+   (ardentia-dashboard--row-tag (tabulated-list-get-id) on))
   (force-mode-line-update))
 
 (defun ardentia-dashboard--print-entry (id cols)
@@ -1482,12 +1547,14 @@ A running merge and a group header are not tasks.  With STRICT signal a
 This is the `tabulated-list-printer' of the task list, so every way of
 printing the rows shows the marks."
   (tabulated-list-print-entry id cols)
-  (when (and ardentia-dashboard--marked
-             (not (ardentia-dashboard--non-task-p id))
-             (member (ardentia--task-key id) ardentia-dashboard--marked))
-    (save-excursion
-      (forward-line -1)
-      (ardentia-dashboard--put-mark t))))
+  (let ((marked (and ardentia-dashboard--marked
+                     (not (ardentia-dashboard--non-task-p id))
+                     (member (ardentia--task-key id) ardentia-dashboard--marked)
+                     t)))
+    (when (or marked (rassq id ardentia-dashboard--row-numbers))
+      (save-excursion
+        (forward-line -1)
+        (ardentia-dashboard--put-mark marked)))))
 
 (defun ardentia-dashboard--marks-prunable-p ()
   "Return non-nil when the list of the view is complete enough to prune marks.
@@ -2087,6 +2154,29 @@ When tasks are marked, accept the marked tasks instead, like
   (if-let* ((tasks (ardentia-dashboard--marked-tasks)))
       (ardentia-dashboard--bulk-accept tasks)
     (ardentia-accept (ardentia-dashboard--require-open-review-task))))
+
+(defun ardentia-dashboard-answer-several ()
+  "Answer several numbered review rows with one string.
+The numbers are those in front of the titles.  The string has items
+separated by newline, `;' or `,': `N L' or `NL' decides option L of the
+card, `N L: TEXT' adds a note, `N ok' accepts, `N skip' leaves the row,
+`N: TEXT' sends it back with the note TEXT, `N.2 L' addresses the second
+open Decide child.  A summary is shown and asked for once."
+  (interactive)
+  (let ((numbered ardentia-dashboard--row-numbers))
+    (unless numbered (user-error "No review rows are listed"))
+    (ardentia-answer-run
+     numbered
+     (read-string "Answer (N L[: note], N ok, N skip, N: note; `;' or `,' between): "))))
+
+(defun ardentia-dashboard-answer-or-shell ()
+  "In the review view answer several rows, elsewhere open the agent shell.
+See `ardentia-dashboard-answer-several' and `ardentia-dashboard-agent-shell'.
+The agent shell is also on `C-c A'."
+  (interactive)
+  (if (eq (ardentia-dashboard--view-now) 'review)
+      (ardentia-dashboard-answer-several)
+    (ardentia-dashboard-agent-shell)))
 
 (defun ardentia-dashboard-send-back ()
   "Send the review task at point back to the agents."

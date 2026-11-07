@@ -44,6 +44,7 @@
 (require 'transient)
 (require 'ardentia-core)
 (require 'ardentia-actions)
+(require 'ardentia-answer)
 (require 'ardentia-review)
 (require 'ardentia-session)
 (require 'ardentia-dashboard)

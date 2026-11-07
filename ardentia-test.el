@@ -853,8 +853,9 @@ Text
       (should (string-match-p "  - == COMMITS ==\n    - abc1234 something" text))
       (should (equal (plist-get info :todo) "TODO"))
       (should (null (plist-get info :priority)))
-      (should (string-match-p "^\\* TODO Task one :refile:humanreview:$" text))
-      (should (string-match-p "^- Status :: TODO, agents: completed$" text))
+      (should (string-match-p "^\\* Task one$" text))
+      (should (string-match-p
+               "^- Status :: TODO, tags: refile humanreview, agents: completed$" text))
       (should (string-match-p "Original task text" text)))))
 
 (defconst ardentia-test--org-sections
@@ -940,14 +941,15 @@ Sub body line
                  (append '(:todo "TODO" :priority ?A :tags ("a")
                            :props (("AI_STATUS" . "completed")))
                          base))))
-      (should (string-match-p "^\\* TODO \\[#A\\] T :a:$" text))
-      (should (string-match-p "^- Status :: TODO, agents: completed$" text)))
+      (should (string-match-p "^\\* T$" text))
+      (should (string-match-p
+               "^- Status :: TODO, priority A, tags: a, agents: completed$" text)))
     (let ((text (ardentia-review--render-string base)))
       (should (string-match-p "^\\* T$" text))
       (should (string-match-p "^- Status :: no TODO keyword$" text)))
     (let ((text (ardentia-review--render-string
                  (append '(:todo "DONE" :props (("AI_STATUS" . "failed"))) base))))
-      (should (string-match-p "^\\* DONE T$" text))
+      (should (string-match-p "^\\* T$" text))
       (should (string-match-p "^- Status :: DONE, agents: failed$" text)))
     (should (string-match-p
              "^- Status :: no TODO keyword, agents: x$"
@@ -2798,8 +2800,13 @@ or, with NO-MULTI-TAG, fails on it like an org-tool that predates the form."
                         #'ardentia-dashboard-enter))
             (should (eq (lookup-key ardentia-dashboard-mode-map "t")
                         #'ardentia-dashboard-transcript))
+            ;; A is the agent shell, except in the review view (answer several)
             (should (eq (lookup-key ardentia-dashboard-mode-map "A")
+                        #'ardentia-dashboard-answer-or-shell))
+            (should (eq (lookup-key ardentia-dashboard-mode-map (kbd "C-c A"))
                         #'ardentia-dashboard-agent-shell))
+            (let ((ardentia-dashboard--view 'dashboard))
+              (call-interactively #'ardentia-dashboard-answer-or-shell))
             (should (eq (lookup-key ardentia-review-mode-map "t")
                         #'ardentia-review-transcript))))
       (kill-buffer buf))))
@@ -4501,7 +4508,7 @@ Text
   (ardentia-test--with-org-file f ardentia-test--for-you-org
     (let ((text (ardentia-review--render-string (ardentia-review--collect f "id-fy"))))
       (should (string-match-p
-               "^- Status :: TODO, agents: completed\n- For you :: 2 REQUIRED, 1 optional\n  - REQUIRED: \\[\\[id:a\\]\\[First\\]\\]\n  - optional: keep the name\n\\*\\* Agent properties"
+               "^- Status :: TODO, tags: humanreview, agents: completed\n- For you :: 2 REQUIRED, 1 optional\n  - REQUIRED: \\[\\[id:a\\]\\[First\\]\\]\n  - optional: keep the name\n\\*\\* Agent properties"
                text))))
   (ardentia-test--with-org-file f ardentia-test--org
     (should-not (string-match-p
@@ -6220,5 +6227,408 @@ FILE-VAR is bound to the file; JSON nil means the file does not exist."
 (ert-deftest ardentia-test-stats-wired-into-menus ()
   (should (eq (ardentia-test--suffix-command 'ardentia "s") 'ardentia-stats))
   (should (eq (keymap-lookup ardentia-dashboard-mode-map "4") 'ardentia-stats)))
+
+
+;;;; Decision card, card-first review buffer, refusals, batch answers
+
+(defconst ardentia-test--card-body
+  "- Question: Which [[id:u-1][Colour]] for the logo?
+- Options
+  - A: Blue -- safe but dull
+  - B: Green -- fresh -- risky on print
+  - C: Red
+- Recommendation: B -- cheap to change later \\\\
+  - would change if print is dropped
+- Until you answer: the task waits; nothing is decided
+- Situation
+  - From [[id:u-2][Logo task]]: three drafts exist
+- How to answer
+  - free text
+"
+  "A complete card body with invented content.")
+
+(ert-deftest ardentia-test-card-parse-complete ()
+  (let ((c (ardentia--card-parse ardentia-test--card-body)))
+    (should (equal (plist-get c :question) "Which Colour for the logo?"))
+    (should (equal (mapcar (lambda (o) (plist-get o :letter)) (plist-get c :options))
+                   '("A" "B" "C")))
+    ;; split at the first " -- " only
+    (should (equal (plist-get (nth 1 (plist-get c :options)) :text) "Green"))
+    (should (equal (plist-get (nth 1 (plist-get c :options)) :tradeoff)
+                   "fresh -- risky on print"))
+    (should (equal (plist-get (nth 2 (plist-get c :options)) :tradeoff) ""))
+    (should (equal (plist-get c :recommendation)
+                   '(:letter "B" :reason "cheap to change later")))
+    (should (equal (plist-get c :until) "the task waits; nothing is decided"))
+    (should (plist-get c :complete))))
+
+(ert-deftest ardentia-test-card-parse-old-format ()
+  (let ((c (ardentia--card-parse
+            "- Situation
+  - something
+- Options
+  - A: Keep it -- no work
+  - B: Drop it -- loses data
+- Recommendation
+  - A
+")))
+    (should (= (length (plist-get c :options)) 2))
+    (should-not (plist-get c :complete))
+    (should (equal (plist-get c :question) ""))
+    (should (equal (plist-get c :until) ""))))
+
+(ert-deftest ardentia-test-card-parse-recommendation-forms ()
+  (let ((c (ardentia--card-parse "- Recommendation: just do it\n")))
+    (should (equal (plist-get c :recommendation) '(:letter "" :reason "just do it"))))
+  (let ((c (ardentia--card-parse "- Recommendation: A\n")))
+    (should (equal (plist-get c :recommendation) '(:letter "A" :reason ""))))
+  ;; a recommended letter that is no option -> incomplete
+  (let ((c (ardentia--card-parse
+            "- Question: q
+- Options
+  - A: x
+  - B: y
+- Recommendation: C -- z
+- Until you answer: wait
+")))
+    (should-not (plist-get c :complete)))
+  ;; one option only -> incomplete
+  (should-not (plist-get (ardentia--card-parse
+                          "- Question: q\n- Options\n  - A: x\n- Recommendation: A\n- Until you answer: w\n")
+                         :complete)))
+
+(ert-deftest ardentia-test-card-parse-drawers-and-links ()
+  (let ((c (ardentia--card-parse
+            ":PROPERTIES:\n:ID: x\n:END:\n:LOGBOOK:\n- State \"TODO\"\n:END:\n- Question: See [[https://example.org][the page]] and [[plain]]\n")))
+    (should (equal (plist-get c :question) "See the page and plain")))
+  (should (equal (ardentia--reduce-links "[[id:a][B]] [[c]]") "B c")))
+
+(ert-deftest ardentia-test-decided-in-name ()
+  (should (equal (ardentia--decided-in-name
+                  '("- AI-Lauf [2026-10-11 Sun 10:00] completed: ok \\\\"
+                    "  - For you: nothing"
+                    "  - Decided in your name: chose [[id:u-3][Plan B]] -- per preferences.md: prefers small"
+                    "  - Decided in your name: kept the name -- per preferences.md: stability"
+                    "  - Details"))
+                 '("chose Plan B -- per preferences.md: prefers small"
+                   "kept the name -- per preferences.md: stability")))
+  (should-not (ardentia--decided-in-name '("- nothing"))))
+
+(defconst ardentia-test--card-org
+  (concat "* TODO Logo task :refile:humanreview:
+:PROPERTIES:
+:ID:       id-t1
+:AI_STATUS: completed
+:END:
+:LOGBOOK:
+- AI-Lauf [2026-10-11 Sun 18:59] completed: Done \\\\
+  - For you: 1 REQUIRED
+  - Decided in your name: used the short name -- per preferences.md: short names
+:END:
+Task text here
+** TODO Decide: Colour :humanreview:
+:PROPERTIES:
+:ID:       id-d1
+:END:
+" ardentia-test--card-body
+"** TODO Decide: Font :humanreview:
+:PROPERTIES:
+:ID:       id-d2
+:END:
+- Question: Which font?
+- Options
+  - A: Serif -- old
+  - B: Sans -- plain
+- Recommendation: A -- fits
+- Until you answer: waits
+** Result section :tag1:
+:PROPERTIES:
+:ID: id-r1
+:END:
+*** TODO Inner todo :tag2:
+Inner text
+")
+  "A task with two open Decide children and a result section.")
+
+(defun ardentia-test--heading-lines (text)
+  "Return the heading lines of TEXT."
+  (seq-filter (lambda (l) (string-match-p "\\`\\*+ " l)) (split-string text "\n")))
+
+(ert-deftest ardentia-test-review-card-first ()
+  (ardentia-test--with-org-file f ardentia-test--card-org
+    (let* ((info (ardentia-review--collect f "id-t1"))
+           (text (ardentia-review--render-string info))
+           (lines (split-string text "\n")))
+      (should (= (length (plist-get info :decides)) 2))
+      (should (equal (car lines) "* Logo task"))
+      (should (string-prefix-p "- Decision 1 of 2: " (nth 1 lines)))
+      (should (string-match-p "^  - Question: Which Colour for the logo\\?$" text))
+      (should (string-match-p "^  - B: Green -- fresh -- risky on print$" text))
+      (should (string-match-p "^  - Recommendation: B -- cheap to change later$" text))
+      (should (string-match-p "^  - Until you answer: the task waits" text))
+      ;; the card comes before every second-level heading
+      (should (< (string-match "Until you answer" text)
+                 (string-match "^\\*\\* " text)))
+      ;; no heading line has a TODO keyword or a tag
+      (dolist (h (ardentia-test--heading-lines text))
+        (should-not (string-match-p "\\`\\*+ \\(TODO\\|DONE\\|WAIT\\|CANC\\) " h))
+        (should-not (string-match-p ":[[:alnum:]_]+:[ \t]*\\'" h)))
+      (should (string-match-p "^\\*\\* Decided in your name\n- used the short name" text)))))
+
+(ert-deftest ardentia-test-review-card-single-and-fallback ()
+  (ardentia-test--with-org-file f ardentia-test--for-you-org
+    (let ((text (ardentia-review--render-string (ardentia-review--collect f "id-fy"))))
+      (should (string-match-p "\\`\\* Task fy\n- For you: 2 REQUIRED, 1 optional\n  - REQUIRED: " text))))
+  (ardentia-test--with-org-file f "* TODO Solo :humanreview:
+:PROPERTIES:
+:ID: id-s
+:END:
+** TODO Decide: One :humanreview:
+- Question: Only one?
+- Options
+  - A: Yes -- fine
+  - B: No -- fine too
+- Recommendation: A -- ok
+- Until you answer: waits
+"
+    (let ((text (ardentia-review--render-string (ardentia-review--collect f "id-s"))))
+      (should (string-match-p "\\`\\* Solo\n- Question: Only one\\?\n- A: Yes -- fine\n" text))
+      (should-not (string-match-p "Decision 1 of" text)))))
+
+(ert-deftest ardentia-test-review-fold ()
+  (ardentia-test--with-org-file f ardentia-test--card-org
+    (let ((buf (generate-new-buffer " *ardentia-test-review*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (ardentia-review-mode)
+            (setq ardentia-review--task (list :file f :id "id-t1" :title "Logo task"))
+            (ardentia-review-render)
+            (goto-char (point-min))
+            (should-not (invisible-p (point)))
+            (should-not (invisible-p (progn (re-search-forward "Until you answer") (point))))
+            (let ((n 0))
+              (goto-char (point-min))
+              (while (re-search-forward "^\\*\\* " nil t)
+                (setq n (1+ n))
+                (should (invisible-p (line-end-position)))
+                (should-not (invisible-p (line-beginning-position))))
+              (should (>= n 5))))
+        (kill-buffer buf)))))
+
+(ert-deftest ardentia-test-review-mode-refuses-refile-copy-cut-archive ()
+  (ardentia-test--with-org-file f ardentia-test--card-org
+    (let ((buf (generate-new-buffer " *ardentia-test-review*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (ardentia-review-mode)
+            (setq ardentia-review--task (list :file f :id "id-t1" :title "Logo task"))
+            (ardentia-review-render)
+            (goto-char (point-min))
+            (dolist (cmd ardentia-review--refused-commands)
+              (should (eq (command-remapping cmd nil ardentia-review-mode-map)
+                          'ardentia-review-refuse-copy))
+              (should-error (funcall cmd) :type 'user-error))
+            (should (equal (buffer-string) (progn (ardentia-review-render)
+                                                  (buffer-string)))))
+        (kill-buffer buf)))))
+
+;;; Batch parser
+
+(ert-deftest ardentia-test-answer-parse-forms ()
+  (should (equal (ardentia-answer-parse "1 B") '((:n 1 :sub nil :kind decide :letter "B" :text ""))))
+  (should (equal (ardentia-answer-parse "2c") '((:n 2 :sub nil :kind decide :letter "C" :text ""))))
+  (should (equal (ardentia-answer-parse "3 b: because small")
+                 '((:n 3 :sub nil :kind decide :letter "B" :text "because small"))))
+  (should (equal (ardentia-answer-parse "3B because small")
+                 '((:n 3 :sub nil :kind decide :letter "B" :text "because small"))))
+  (should (equal (ardentia-answer-parse "4 ok") '((:n 4 :sub nil :kind accept :letter nil :text nil))))
+  (should (equal (ardentia-answer-parse "4 DONE") '((:n 4 :sub nil :kind accept :letter nil :text nil))))
+  (should (equal (ardentia-answer-parse "5 skip") '((:n 5 :sub nil :kind skip :letter nil :text nil))))
+  (should (equal (ardentia-answer-parse "6: please redo it")
+                 '((:n 6 :sub nil :kind back :letter nil :text "please redo it"))))
+  (should (equal (ardentia-answer-parse "6 please redo it")
+                 '((:n 6 :sub nil :kind back :letter nil :text "please redo it"))))
+  (should (equal (ardentia-answer-parse "7.2 A")
+                 '((:n 7 :sub 2 :kind decide :letter "A" :text ""))))
+  (should (equal (ardentia-answer-parse "7.2a: note")
+                 '((:n 7 :sub 2 :kind decide :letter "A" :text "note")))))
+
+(ert-deftest ardentia-test-answer-parse-separators-and-errors ()
+  (dolist (sep '("\n" ";" "," " ; " ",\n"))
+    (let ((acts (ardentia-answer-parse (concat "1 A" sep "2 ok" sep "3 skip"))))
+      (should (equal (mapcar (lambda (a) (plist-get a :kind)) acts)
+                     '(decide accept skip)))
+      (should (equal (mapcar (lambda (a) (plist-get a :n)) acts) '(1 2 3)))))
+  (should-error (ardentia-answer-parse "") :type 'user-error)
+  (should-error (ardentia-answer-parse " ; , ") :type 'user-error)
+  (should-error (ardentia-answer-parse "hello") :type 'user-error)
+  (should-error (ardentia-answer-parse "3") :type 'user-error)
+  (should-error (ardentia-answer-parse "3:") :type 'user-error)
+  (should-error (ardentia-answer-parse "3.2 ok") :type 'user-error))
+
+;;; Resolving against rows
+
+(defun ardentia-test--answer-rows (file)
+  "Return the rows alist for the card fixture in FILE as rows 1 (card), 2 (plain)."
+  (let ((task1 (list :file file :id "id-t1" :title "Logo task" :tags '("humanreview"))))
+    (list (list 1 :task task1 :info (ardentia-review--collect file "id-t1"))
+          (list 2 :task (list :file file :id "id-x" :title "Plain") :info nil))))
+
+(ert-deftest ardentia-test-answer-resolve ()
+  (ardentia-test--with-org-file f ardentia-test--card-org
+    (let* ((rows (ardentia-test--answer-rows f))
+           (steps (ardentia-answer-resolve
+                   (ardentia-answer-parse "1 B: cheaper\n1.2 a\n2 ok") rows)))
+      (should (= (length steps) 3))
+      (should (equal (plist-get (nth 0 steps) :note)
+                     "Decision on Decide: Colour: B -- Green; cheaper"))
+      (should (equal (plist-get (plist-get (nth 0 steps) :decide) :id) "id-d1"))
+      (should (equal (plist-get (nth 1 steps) :note)
+                     "Decision on Decide: Font: A -- Serif"))
+      (should (equal (plist-get (plist-get (nth 1 steps) :decide) :id) "id-d2"))
+      (should (eq (plist-get (nth 2 steps) :kind) 'accept))
+      (should (string-match-p "decide B: Green" (ardentia-answer-summary steps))))
+    (let ((rows (ardentia-test--answer-rows f)))
+      (should-error (ardentia-answer-resolve (ardentia-answer-parse "9 A") rows)
+                    :type 'user-error)
+      (should-error (ardentia-answer-resolve (ardentia-answer-parse "1 Z") rows)
+                    :type 'user-error)
+      (should-error (ardentia-answer-resolve (ardentia-answer-parse "1.3 A") rows)
+                    :type 'user-error)
+      (should-error (ardentia-answer-resolve (ardentia-answer-parse "2 A") rows)
+                    :type 'user-error)
+      (should-error (ardentia-answer-resolve (ardentia-answer-parse "1 A, 1 B") rows)
+                    :type 'user-error)
+      ;; skip and back need no card
+      (should (= (length (ardentia-answer-resolve
+                          (ardentia-answer-parse "2 skip") rows))
+                 1)))))
+
+;;; Execution on a temp file
+
+(defconst ardentia-test--exec-org
+  (concat "* TODO Logo task :refile:humanreview:
+:PROPERTIES:
+:ID:       id-t1
+:END:
+** TODO Decide: Colour :humanreview:
+:PROPERTIES:
+:ID:       id-d1
+:END:
+" ardentia-test--card-body
+"** TODO Decide: Font :humanreview:
+:PROPERTIES:
+:ID:       id-d2
+:END:
+- Question: Which font?
+- Options
+  - A: Serif -- old
+  - B: Sans -- plain
+- Recommendation: A -- fits
+- Until you answer: waits
+* TODO Second task :humanreview:
+:PROPERTIES:
+:ID:       id-t2
+:END:
+** TODO Open child
+* TODO Third task :humanreview:ai_in_progress:
+:PROPERTIES:
+:ID:       id-t3
+:END:
+** TODO Decide: Name :humanreview:
+- Question: Name?
+- Options
+  - A: Short -- terse
+  - B: Long -- wordy
+- Recommendation: A -- ok
+- Until you answer: waits
+* TODO Fourth task :humanreview:
+:PROPERTIES:
+:ID:       id-t4
+:END:
+")
+  "Four review tasks for the execution tests.")
+
+(defun ardentia-test--exec (file string)
+  "Answer STRING for the tasks of FILE (rows 1-4 = id-t1..id-t4), confirming."
+  (let ((numbered (cl-loop for i from 1 to 4
+                           collect (cons i (list :file file :id (format "id-t%d" i)
+                                                 :title (format "T%d" i)
+                                                 :tags (if (= i 3)
+                                                           '("humanreview" "ai_in_progress")
+                                                         '("humanreview")))))))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+              ((symbol-function 'display-buffer) #'ignore))
+      (ardentia-answer-run numbered string))))
+
+(defun ardentia-test--subtree (file id)
+  "Return the text of the subtree with ID in FILE, stamps normalised."
+  (with-temp-buffer
+    (insert (ardentia-test--file-text file))
+    (org-mode)
+    (goto-char (point-min))
+    (re-search-forward (format ":ID: +%s$" id))
+    (org-back-to-heading t)
+    (buffer-substring (point) (save-excursion (org-end-of-subtree t t) (point)))))
+
+(ert-deftest ardentia-test-answer-execute-decide ()
+  (ardentia-test--with-org-file f ardentia-test--exec-org
+    (let ((r (ardentia-test--exec f "1 B: cheaper")))
+      (should (= (plist-get r :done) 1))
+      (let ((text (ardentia-test--file-text f)))
+        (should (string-match-p
+                 (regexp-quote "Decision on Decide: Colour: B -- Green; cheaper") text))
+        (should (string-match-p "^\\* TODO Logo task :refile:aiready:$" text))
+        (should (string-match-p "^\\*\\* DONE Decide: Colour" text))
+        ;; the second Decide child stays open, the task still goes back
+        (should (string-match-p "^\\*\\* TODO Decide: Font" text))))))
+
+(ert-deftest ardentia-test-answer-execute-second-decide ()
+  (ardentia-test--with-org-file f ardentia-test--exec-org
+    (ardentia-test--exec f "1.2 A")
+    (let ((text (ardentia-test--file-text f)))
+      (should (string-match-p "^\\*\\* TODO Decide: Colour" text))
+      (should (string-match-p "^\\*\\* DONE Decide: Font" text))
+      (should (string-match-p "Decision on Decide: Font: A -- Serif" text)))))
+
+(ert-deftest ardentia-test-answer-execute-accept ()
+  (ardentia-test--with-org-file f ardentia-test--exec-org
+    (ardentia-test--exec f "2 ok")
+    (let ((text (ardentia-test--file-text f)))
+      (should (string-match-p "^\\*\\* DONE Open child" text))
+      (should (string-match-p "^\\* DONE Second task" text)))))
+
+(ert-deftest ardentia-test-answer-execute-back ()
+  (ardentia-test--with-org-file f ardentia-test--exec-org
+    (ardentia-test--exec f "4: please redo it")
+    (let ((sub (ardentia-test--subtree f "id-t4")))
+      (should (string-match-p "please redo it" sub))
+      (should (string-match-p "^\\* TODO Fourth task :aiready:$" sub)))))
+
+(ert-deftest ardentia-test-answer-execute-skip ()
+  (ardentia-test--with-org-file f ardentia-test--exec-org
+    (let ((before (ardentia-test--file-text f)))
+      (ardentia-test--exec f "1 skip, 4 skip")
+      (should (equal before (ardentia-test--file-text f))))))
+
+(ert-deftest ardentia-test-answer-execute-in-progress ()
+  (ardentia-test--with-org-file f ardentia-test--exec-org
+    (ardentia-test--exec f "3 A")
+    (let ((sub (ardentia-test--subtree f "id-t3")))
+      (should (string-match-p "Decision on Decide: Name: A -- Short" sub))
+      (should (string-match-p "^\\*\\* DONE Decide: Name" sub))
+      (should (string-match-p "^\\* TODO Third task :humanreview:ai_in_progress:$" sub))
+      (should-not (string-match-p "aiready" sub)))))
+
+(ert-deftest ardentia-test-answer-execute-declined ()
+  (ardentia-test--with-org-file f ardentia-test--exec-org
+    (let ((before (ardentia-test--file-text f)))
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil))
+                ((symbol-function 'display-buffer) #'ignore))
+        (should-not (ardentia-answer-run
+                     (list (cons 4 (list :file f :id "id-t4" :title "T4"
+                                         :tags '("humanreview"))))
+                     "4 ok")))
+      (should (equal before (ardentia-test--file-text f))))))
 
 ;;; ardentia-test.el ends here

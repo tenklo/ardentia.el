@@ -155,7 +155,9 @@ on an ardentia map outside `with-eval-after-load` is lost on reload.
 | `ardentia-knowledge`     | Read-only list of the knowledge files in `*ardentia knowledge*`; large files are grepped, not opened |
 | `ardentia-stats`         | Read-only agent stats dashboards in `*ardentia-stats*`, rendered from the JSON file of an external tool (see Agent stats) |
 | `ardentia-agents`        | Read-only list of the agent definitions with model, tools and limits in `*ardentia agents*` |
-| `ardentia-review-task`   | Read-only org view of one task (run report, notes, result sections with their content, open child tasks) |
+| `ardentia-review-task`   | Read-only org view of one task: the decision card first, below it, folded, run report, notes, result sections with their content, open child tasks (see Review cards and batch answers) |
+| `ardentia-review-decide` | Review buffer (`d`): pick an option of the card, optional note |
+| `ardentia-dashboard-answer-several` | Review view (`A`): answer several numbered rows with one string |
 | `ardentia-session-open` | Read-only, live-following transcript of the agent session of a task |
 | `ardentia-session-open-agent-shell` | Resume that session in `agent-shell` (optional package) |
 | `ardentia-new-task`      | Capture a new `:aiready:` task (asks for the host)   |
@@ -214,8 +216,11 @@ Other keys:
 data again each time), `RET` open (review buffer for a review task,
 session transcript for a running task, an error for other queues),
 `t` session transcript of the task in any queue (the latest run),
-`A` join the running session (see Session transcripts) or, for other tasks,
-resume the latest session in `agent-shell`, `o` visit the heading,
+`A` in the review view: answer several numbered review rows at once (see
+Review cards and batch answers); in the other views join the running session
+(see Session transcripts) or, for other tasks, resume the latest session in
+`agent-shell` (`C-c A` does that in every view, `C-c C-a` answers in any view),
+`o` visit the heading,
 `,` set the priority (SPC removes it), `+`/`-` (also `S-<up>`/`S-<down>`)
 raise/lower it (every task row),
 (also on freshly captured tasks that have no `:ID:` yet: the heading is
@@ -273,6 +278,42 @@ Marks and edits work like in org-agenda:
   - no log entries are written in a bulk action
   - the marks are cleared afterwards unless `org-agenda-persistent-marks` is non-nil
 The Cost column shows `AI_COST_USD_TOTAL` for every task that has it.
+### Review cards and batch answers
+
+The review buffer shows the card first, everything else folded below it
+(`TAB` unfolds):
+- a task with open `Decide: ...` child TODOs: one card per child, parsed from the
+  child's body: `- Question:`, `- Options` with `- A: what -- trade-off`,
+  `- Recommendation: L -- reason`, `- Until you answer:`; a card that lacks a
+  part shows what there is and says so
+- else the `For you` text of the newest run report with its sub-items, or
+  `nothing to do -- accept?`
+- below, folded: file and status, properties, the run report, `Decided in your
+  name` (the `- Decided in your name:` sub-items of the report), your notes,
+  result sections, the task text
+
+The buffer is a view, not the task: its heading has no TODO keyword and no tags,
+and `org-refile`, `org-refile-copy`, `org-copy-subtree`, `org-cut-subtree` and
+the archive commands refuse in it (`o` visits the real heading).
+
+`d` in the review buffer picks an option of the card (and asks for an optional
+note). `A` in the review view reads one string for several rows, by the row
+numbers shown in front of the titles. Items are separated by newline, `;` or `,`:
+
+| Item | Effect |
+|------|--------|
+| `N L` or `NL` | decide option L (case-insensitive) |
+| `N L: TEXT` or `NL TEXT` | decide option L, TEXT added to the note |
+| `N ok` or `N done` | accept: open children and the task set DONE |
+| `N skip` | nothing |
+| `N: TEXT` or `N TEXT` | send back with the note TEXT |
+| `N.2 L` | option L of the second open Decide child (default: the first) |
+
+A summary is shown and confirmed once. Deciding adds the note
+`Decision on <Decide title>: L -- <option>[; TEXT]` to the task, sets the Decide
+child DONE and replaces `humanreview` by `aiready` (not while the task is
+`ai_in_progress`). Sending back adds the note and swaps the tag the same way.
+
 For a review task, the Flags column ends with the class of the `For you`
 line of its newest run report: `you!` when the line contains `REQUIRED`,
 `opt` when it only offers optional follow-ups, nothing for `nothing to do`
