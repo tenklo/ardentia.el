@@ -44,11 +44,24 @@
 
 (declare-function ardentia "ardentia" ())
 
-(defcustom ardentia-knowledge-directory
-  (expand-file-name "ai/knowledge/" ardentia-org-directory)
-  "Directory with the knowledge files shown by `ardentia-knowledge'."
-  :type 'directory
+(defcustom ardentia-knowledge-directories
+  (list (expand-file-name "ai/knowledge/" ardentia-org-directory)
+        (expand-file-name "project-private/ai/knowledge/"
+                          ardentia-org-directory))
+  "Directories with the knowledge files shown by `ardentia-knowledge'.
+Directories that do not exist are skipped.  With more than one existing
+directory the list gets a Dir column."
+  :type '(repeat directory)
   :group 'ardentia)
+
+(defcustom ardentia-knowledge-directory nil
+  "Single knowledge directory; obsolete, use `ardentia-knowledge-directories'.
+When non-nil and not yet in `ardentia-knowledge-directories' it is
+prepended to that list."
+  :type '(choice (const nil) directory)
+  :group 'ardentia)
+(make-obsolete-variable 'ardentia-knowledge-directory
+                        'ardentia-knowledge-directories "0.1")
 
 (defcustom ardentia-knowledge-large-file-size 100000
   "Size in bytes above which a knowledge file is only grepped, not visited."
@@ -137,41 +150,85 @@ Only the first `ardentia-browse--title-bytes' bytes are read."
   (> (file-attribute-size (file-attributes file))
      ardentia-knowledge-large-file-size))
 
-(defun ardentia-knowledge--row (file)
+(defun ardentia-knowledge--row (file &optional reldir)
   "Return the row vector for the knowledge FILE.
-Columns: name, size, modified, note, title."
+Columns: name, size, modified, note, title.  A non-nil RELDIR adds the
+Dir column after the name."
   (let* ((attrs (file-attributes file))
          (large (ardentia-knowledge--large-p file))
          (name (file-name-nondirectory file)))
-    (vector (if large (propertize name 'face 'ardentia-knowledge-large) name)
-            (file-size-human-readable (file-attribute-size attrs))
-            (ardentia-browse--format-time
-             (file-attribute-modification-time attrs))
-            (if large (propertize "grep only" 'face 'ardentia-knowledge-large)
-              "")
-            (ardentia-knowledge--title file))))
+    (apply #'vector
+           (append
+            (list (if large (propertize name 'face 'ardentia-knowledge-large)
+                    name))
+            (and reldir (list reldir))
+            (list (file-size-human-readable (file-attribute-size attrs))
+                  (ardentia-browse--format-time
+                   (file-attribute-modification-time attrs))
+                  (if large
+                      (propertize "grep only" 'face 'ardentia-knowledge-large)
+                    "")
+                  (ardentia-knowledge--title file))))))
+
+(defun ardentia-knowledge--directories ()
+  "Return the existing knowledge directories, normalised, without duplicates.
+The obsolete `ardentia-knowledge-directory' comes first when set.  Signal
+a `user-error' when none of them exists."
+  (let* ((norm (lambda (d) (file-name-as-directory (expand-file-name d))))
+         (dirs (mapcar norm ardentia-knowledge-directories))
+         (old (and ardentia-knowledge-directory
+                   (funcall norm ardentia-knowledge-directory))))
+    (when (and old (not (member old dirs)))
+      (push old dirs))
+    (let ((existing (seq-uniq (seq-filter #'file-directory-p dirs))))
+      (unless existing
+        (user-error "No knowledge directory exists: %s"
+                    (mapconcat #'identity dirs ", ")))
+      existing)))
+
+(defun ardentia-knowledge--common-parent (dirs)
+  "Return the longest common parent directory of DIRS as a directory name."
+  (let ((common (split-string (directory-file-name (car dirs)) "/")))
+    (dolist (d (cdr dirs))
+      (let ((parts (split-string (directory-file-name d) "/")) (keep nil))
+        (while (and common parts (equal (car common) (car parts)))
+          (push (car common) keep)
+          (setq common (cdr common) parts (cdr parts)))
+        (setq common (nreverse keep))))
+    (file-name-as-directory (if (equal common '("")) "/"
+                              (string-join common "/")))))
 
 (defun ardentia-knowledge--entries ()
-  "Return `tabulated-list-entries' for `ardentia-knowledge-directory'."
-  (let ((dir ardentia-knowledge-directory))
-    (mapcar (lambda (name)
-              (let ((file (expand-file-name name dir)))
-                (list file (ardentia-knowledge--row file))))
-            (sort (ardentia-browse--regular-files dir #'always)
-                  #'string<))))
+  "Return `tabulated-list-entries' for `ardentia-knowledge-directories'.
+Rows get a Dir column when more than one directory exists."
+  (let* ((dirs (ardentia-knowledge--directories))
+         (parent (and (cdr dirs) (ardentia-knowledge--common-parent dirs))))
+    (mapcan
+     (lambda (dir)
+       (let ((rel (and parent
+                       (let ((r (directory-file-name
+                                 (file-relative-name dir parent))))
+                         (if (string-empty-p r) "." r)))))
+         (mapcar (lambda (name)
+                   (let ((file (expand-file-name name dir)))
+                     (list file (ardentia-knowledge--row file rel))))
+                 (sort (ardentia-browse--regular-files dir #'always)
+                       #'string<))))
+     dirs)))
 
 ;;;; Knowledge mode
 
 (defun ardentia-knowledge--grep (regexp files)
   "Grep REGEXP in FILES asynchronously, results in a `grep-mode' buffer.
-FILES are absolute names; grep runs in `ardentia-knowledge-directory'."
-  (let ((default-directory (file-name-as-directory
-                            (expand-file-name ardentia-knowledge-directory))))
+FILES are absolute names; grep runs in the common parent of the existing
+`ardentia-knowledge-directories'."
+  (let* ((dirs (ardentia-knowledge--directories))
+         (default-directory (if (cdr dirs)
+                                (ardentia-knowledge--common-parent dirs)
+                              (car dirs))))
     (compilation-start
      (concat "grep -nHI -e " (shell-quote-argument regexp) " -- "
-             (mapconcat (lambda (f)
-                          (shell-quote-argument (file-relative-name f)))
-                        files " "))
+             (mapconcat #'shell-quote-argument files " "))
      'grep-mode)))
 
 (defun ardentia-knowledge--file-at-point ()
@@ -208,6 +265,8 @@ FILES are absolute names; grep runs in `ardentia-knowledge-directory'."
   "Re-read the knowledge directory."
   (interactive)
   (setq tabulated-list-entries (ardentia-knowledge--entries))
+  (ardentia-knowledge--set-format
+   (> (length (cadr (car tabulated-list-entries))) 5))
   (tabulated-list-print t))
 
 (ardentia-define-keys-and-menu
@@ -224,30 +283,35 @@ FILES are absolute names; grep runs in `ardentia-knowledge-directory'."
     ("g" "Refresh" ardentia-knowledge-refresh)
     ("q" "Quit" quit-window))))
 
+(defun ardentia-knowledge--set-format (dir-column)
+  "Set `tabulated-list-format'; with DIR-COLUMN add the Dir column."
+  (setq tabulated-list-format
+        (vconcat
+         (list '("Name" 32 t))
+         (and dir-column (list '("Dir" 24 t)))
+         (list (list "Size" 8
+                     (lambda (a b)
+                       (< (file-attribute-size (file-attributes (car a)))
+                          (file-attribute-size (file-attributes (car b)))))
+                     :right-align t)
+               '("Modified" 16 t) '("Note" 9 t) '("Title" 0 t))))
+  (tabulated-list-init-header))
+
 (define-derived-mode ardentia-knowledge-mode tabulated-list-mode
   "Ardentia-Knowledge"
   "Major mode listing the knowledge files; large ones are only grepped.
 
 \\{ardentia-knowledge-mode-map}"
-  (setq tabulated-list-format
-        (vector '("Name" 32 t)
-                (list "Size" 8
-                      (lambda (a b)
-                        (< (file-attribute-size (file-attributes (car a)))
-                           (file-attribute-size (file-attributes (car b)))))
-                      :right-align t)
-                '("Modified" 16 t) '("Note" 9 t) '("Title" 0 t)))
+  (ardentia-knowledge--set-format nil)
   (setq tabulated-list-padding 1)
   (setq tabulated-list-sort-key '("Name"))
-  (setq header-line-format nil)
-  (tabulated-list-init-header))
+  (setq header-line-format nil))
 
 ;;;###autoload
 (defun ardentia-knowledge ()
   "Browse the knowledge files read-only; large files are grepped, not opened."
   (interactive)
-  (unless (file-directory-p ardentia-knowledge-directory)
-    (user-error "Directory does not exist: %s" ardentia-knowledge-directory))
+  (ardentia-knowledge--directories)
   (let ((buf (get-buffer-create "*ardentia knowledge*")))
     (with-current-buffer buf
       (unless (derived-mode-p 'ardentia-knowledge-mode)

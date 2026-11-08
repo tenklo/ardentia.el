@@ -526,8 +526,15 @@ Both browsers are strictly read-only and read only the head of each file
 to build their lists.
 
 `ardentia-knowledge` (`k` in the menu) lists the regular files of
-`ardentia-knowledge-directory` (not recursive; dotfiles and backups are
-skipped) with Name, Size, Modified and the title (the first `# ` heading).
+the directories in `ardentia-knowledge-directories` (default: `ai/knowledge/`
+and `project-private/ai/knowledge/` under `ardentia-org-directory`; not
+recursive; dotfiles and backups are skipped; directories that do not exist
+are skipped, and it is an error only when none exists) with Name, Size,
+Modified and the title (the first `# ` heading). With more than one existing
+directory a Dir column shows each file's directory relative to the longest
+common parent of those directories; grep runs over the files of all of them.
+The single-directory variable `ardentia-knowledge-directory` is obsolete;
+when set it is prepended to the list.
 Files larger than `ardentia-knowledge-large-file-size` are marked "grep
 only" and are never visited whole by `RET`. Keys: `RET` view a small file
 read-only, or ask for a regexp and grep that one large file in a
@@ -645,7 +652,8 @@ never while the minibuffer is active or a refresh runs; re-open the dashboard
 to restart the timer),
 `ardentia-timer-unit`, `ardentia-service-unit`,
 `ardentia-run-task-command`, `ardentia-stop-task-command`,
-`ardentia-knowledge-directory`, `ardentia-knowledge-large-file-size`
+`ardentia-knowledge-directories` (list; `ardentia-knowledge-directory` is
+obsolete), `ardentia-knowledge-large-file-size`
 (default 100000 bytes), `ardentia-agents-directory`,
 `ardentia-session-directory`, `ardentia-session-viewer`,
 `ardentia-session-say-command`,

@@ -4237,7 +4237,8 @@ fetching and the hosts file are replaced by fixtures, the timer is boxed."
   `(let* ((root (make-temp-file "ardentia-browse" t))
           (kdir (file-name-as-directory (expand-file-name "k" root)))
           (adir (file-name-as-directory (expand-file-name "a" root)))
-          (ardentia-knowledge-directory kdir)
+          (ardentia-knowledge-directories (list kdir))
+          (ardentia-knowledge-directory nil)
           (ardentia-agents-directory adir)
           (ardentia-knowledge-large-file-size 100))
      (make-directory kdir)
@@ -4347,12 +4348,104 @@ fetching and the hosts file are replaced by fixtures, the timer is boxed."
                       "true" "Does x: y"])))))
 
 (ert-deftest ardentia-test-browse-missing-directory ()
-  (let ((ardentia-knowledge-directory "/nonexistent-ardentia-dir/")
+  (let ((ardentia-knowledge-directories '("/nonexistent-ardentia-dir/"))
+        (ardentia-knowledge-directory nil)
         (ardentia-agents-directory "/nonexistent-ardentia-dir/"))
     (should-error (ardentia-knowledge--entries) :type 'user-error)
     (should-error (ardentia-agents--entries) :type 'user-error)
     (should-error (ardentia-knowledge) :type 'user-error)
     (should-error (ardentia-agents) :type 'user-error)))
+
+(defmacro ardentia-test--with-two-kdirs (&rest body)
+  "Run BODY with two knowledge directories `d1' and `d2' under a temp root."
+  (declare (indent 0))
+  `(let* ((root (make-temp-file "ardentia-kdirs" t))
+          (d1 (file-name-as-directory (expand-file-name "ai/knowledge" root)))
+          (d2 (file-name-as-directory
+               (expand-file-name "private/ai/knowledge" root)))
+          (ardentia-knowledge-directories (list d1 d2))
+          (ardentia-knowledge-directory nil))
+     (make-directory d1 t)
+     (make-directory d2 t)
+     (unwind-protect (progn ,@body)
+       (delete-directory root t))))
+
+(ert-deftest ardentia-test-knowledge-two-dirs-listed ()
+  (ardentia-test--with-two-kdirs
+    (let ((a (ardentia-test--bwrite d1 "a.md" "# A\n"))
+          (b (ardentia-test--bwrite d2 "b.md" "# B\n")))
+      (let ((entries (ardentia-knowledge--entries)))
+        (should (equal (mapcar #'car entries) (list a b)))
+        (should (equal (aref (cadr (nth 0 entries)) 1) "ai/knowledge"))
+        (should (equal (aref (cadr (nth 1 entries)) 1)
+                       "private/ai/knowledge"))
+        (should (equal (aref (cadr (nth 1 entries)) 5) "B"))))))
+
+(ert-deftest ardentia-test-knowledge-dir-column ()
+  (ardentia-test--with-two-kdirs
+    (ardentia-test--bwrite d1 "a.md" "# A\n")
+    (ardentia-test--bwrite d2 "b.md" "# B\n")
+    (with-temp-buffer
+      (ardentia-knowledge-mode)
+      (ardentia-knowledge-refresh)
+      (should (equal (mapcar #'car (append tabulated-list-format nil))
+                     '("Name" "Dir" "Size" "Modified" "Note" "Title"))))
+    (let ((ardentia-knowledge-directories (list d1)))
+      (with-temp-buffer
+        (ardentia-knowledge-mode)
+        (ardentia-knowledge-refresh)
+        (should (equal (mapcar #'car (append tabulated-list-format nil))
+                       '("Name" "Size" "Modified" "Note" "Title")))
+        (should (= (length (cadr (car tabulated-list-entries))) 5))))))
+
+(ert-deftest ardentia-test-knowledge-missing-dir-skipped ()
+  (ardentia-test--with-two-kdirs
+    (ardentia-test--bwrite d1 "a.md" "# A\n")
+    (let ((ardentia-knowledge-directories
+           (list d1 (expand-file-name "nope/" root))))
+      (let ((entries (ardentia-knowledge--entries)))
+        (should (= (length entries) 1))
+        (should (= (length (cadr (car entries))) 5))))))
+
+(ert-deftest ardentia-test-knowledge-none-exists ()
+  (let ((ardentia-knowledge-directories '("/nonexistent-ardentia-a/"
+                                          "/nonexistent-ardentia-b/"))
+        (ardentia-knowledge-directory nil))
+    (should-error (ardentia-knowledge--entries) :type 'user-error)
+    (should-error (ardentia-knowledge) :type 'user-error)))
+
+(ert-deftest ardentia-test-knowledge-obsolete-var-prepended ()
+  (ardentia-test--with-two-kdirs
+    (let* ((d3 (file-name-as-directory (expand-file-name "old" root)))
+           (c (progn (make-directory d3)
+                     (ardentia-test--bwrite d3 "c.md" "# C\n")))
+           (a (ardentia-test--bwrite d1 "a.md" "# A\n"))
+           (ardentia-knowledge-directory d3))
+      (should (equal (mapcar #'car (ardentia-knowledge--entries)) (list c a)))
+      ;; Already in the list (even unnormalised): not added twice.
+      (let ((ardentia-knowledge-directory (directory-file-name d1)))
+        (should (equal (mapcar #'car (ardentia-knowledge--entries))
+                       (list a)))))))
+
+(ert-deftest ardentia-test-knowledge-grep-over-both ()
+  (ardentia-test--with-two-kdirs
+    (let ((a (ardentia-test--bwrite d1 "a.md" "# A\n"))
+          (b (ardentia-test--bwrite d2 "b.md" "# B\n"))
+          cmd dir)
+      (cl-letf (((symbol-function 'read-regexp) (lambda (&rest _) "foo"))
+                ((symbol-function 'compilation-start)
+                 (lambda (c &rest _) (setq cmd c dir default-directory))))
+        (ardentia-knowledge-search))
+      (should (string-match-p (regexp-quote (shell-quote-argument a)) cmd))
+      (should (string-match-p (regexp-quote (shell-quote-argument b)) cmd))
+      (should (equal dir (file-name-as-directory (expand-file-name root)))))))
+
+(ert-deftest ardentia-test-knowledge-common-parent ()
+  (should (equal (ardentia-knowledge--common-parent '("/r/ai/k/" "/r/p/ai/k/"))
+                 "/r/"))
+  (should (equal (ardentia-knowledge--common-parent '("/a/" "/b/")) "/"))
+  (should (equal (ardentia-knowledge--common-parent '("/r/k/" "/r/k/sub/"))
+                 "/r/k/")))
 
 
 ;;; Per-buffer help menus
