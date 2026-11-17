@@ -168,7 +168,7 @@ on an ardentia map outside `with-eval-after-load` is lost on reload.
 | `ardentia-stop-task` | Stop the run of a running task (asks first; the claiming computer only) |
 | `ardentia-dashboard-stop` | Dashboard: stop the running task at point |
 | `ardentia-session-stop` | Session transcript: stop the task of this transcript |
-| `ardentia-set-model` | Org buffer: ask for a role (orchestrator, planner, researcher, worker, qa), then set or remove its `AI_MODEL_<ROLE>` on the heading at point (`AI_MODEL_ORCHESTRATOR` is the model the runner starts the task's orchestrator with); offers the aliases and the model IDs available to your login, `C-u` refetches; `org-set-property` completes the same values |
+| `ardentia-set-model` | Org buffer: ask for a role of `ardentia-model-roles` (default lead, qa), then set or remove its `AI_MODEL_<ROLE>` on the heading at point (the first role's, `AI_MODEL_LEAD` by default, is the model the runner starts the task with); offers the aliases and the model IDs available to your login, `C-u` refetches; `org-set-property` completes the same values |
 | `ardentia-dashboard-set-model` | Dashboard (`M`): the same for the task at point |
 | `ardentia-dashboard-priority` | Dashboard: set the priority of the task at point (SPC removes it) |
 | `ardentia-dashboard-priority-up` / `-down` | Dashboard: raise or lower that priority |
@@ -658,6 +658,10 @@ obsolete), `ardentia-knowledge-large-file-size`
 `ardentia-session-directory`, `ardentia-session-viewer`,
 `ardentia-session-say-command`,
 `ardentia-session-agent-shell-verbosity`,
+`ardentia-model-roles` (the roles `M` offers, default `("lead" "qa")`; set
+it to the roles of another team, e.g. `("orchestrator" "planner"
+"researcher" "worker" "qa")`), `ardentia-model-property` (default nil = the
+first role's `AI_MODEL_<ROLE>`), `ardentia-model-aliases`,
 `ardentia-session-follow-interval`, `ardentia-session-result-lines`,
 `ardentia-session-line-width`, `ardentia-session-idle-seconds`,
 `ardentia-session-search-limit`,

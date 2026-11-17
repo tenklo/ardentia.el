@@ -5525,7 +5525,7 @@ it a top-level task."
         (ardentia-model-aliases '("haiku" "opus")))
     (cl-letf (((symbol-function 'ardentia-model--fetch) (lambda () (error "fetched"))))
       (should (equal (ardentia-model-candidates) '("haiku" "opus" "claude-a-1")))
-      (should (equal (ardentia-model-allowed-values "AI_MODEL_ORCHESTRATOR")
+      (should (equal (ardentia-model-allowed-values "AI_MODEL_LEAD")
                      '("haiku" "opus" "claude-a-1" ":ETC")))
       (should-not (ardentia-model-allowed-values "AI_STATUS"))))
   ;; Stale cache and a failed fetch: the stale list; no cache: aliases only.
@@ -5540,18 +5540,18 @@ it a top-level task."
   (ardentia-test--with-org-file f ardentia-test--prio-org
     (let ((task (ardentia-test--task :file f :id "prio-1" :tags '("aiready"))))
       (ardentia-set-model-1 task "fable")
-      (should (string-match-p ":AI_MODEL_ORCHESTRATOR: +fable\n" (ardentia-test--file-text f)))
+      (should (string-match-p ":AI_MODEL_LEAD: +fable\n" (ardentia-test--file-text f)))
       (ardentia-set-model-1 task nil)
-      (should-not (string-match-p "AI_MODEL_ORCHESTRATOR" (ardentia-test--file-text f))))
+      (should-not (string-match-p "AI_MODEL_LEAD" (ardentia-test--file-text f))))
     (with-current-buffer (find-file-noselect f)
       (goto-char (point-max))
       (re-search-backward "^\\* TODO Review one")
       (forward-line 1)
       (cl-letf (((symbol-function 'ardentia-model-read) (lambda (&rest _) "haiku"))
-                ((symbol-function 'completing-read) (lambda (&rest _) "planner")))
+                ((symbol-function 'completing-read) (lambda (&rest _) "qa")))
         (ardentia-set-model))
-      (should (equal (org-entry-get (point) "AI_MODEL_PLANNER") "haiku"))
-      (should-not (org-entry-get (point) "AI_MODEL_ORCHESTRATOR")))))
+      (should (equal (org-entry-get (point) "AI_MODEL_QA") "haiku"))
+      (should-not (org-entry-get (point) "AI_MODEL_LEAD")))))
 
 (ert-deftest ardentia-test-model-set-role ()
   (ardentia-test--with-org-file f ardentia-test--prio-org
@@ -5561,8 +5561,28 @@ it a top-level task."
 
 (ert-deftest ardentia-test-model-roles ()
   (should (equal (ardentia-model-role-property "qa") "AI_MODEL_QA"))
-  (should (equal (ardentia-model-allowed-values "AI_MODEL_WORKER")
-                 (append (ardentia-model-candidates) '(":ETC")))))
+  (should (equal (eval (car (get 'ardentia-model-roles 'standard-value)) t)
+                 '("lead" "qa")))
+  (should (equal (ardentia-model-allowed-values "AI_MODEL_QA")
+                 (append (ardentia-model-candidates) '(":ETC"))))
+  (should-not (ardentia-model-allowed-values "AI_MODEL_WORKER")))
+
+(ert-deftest ardentia-test-model-roles-custom ()
+  "A local setup names other roles: they are offered, the first is the default."
+  (let ((ardentia-model-roles '("orchestrator" "planner" "worker" "qa"))
+        (ardentia-model-property nil)
+        offered)
+    (should (equal (ardentia-model-default-property) "AI_MODEL_ORCHESTRATOR"))
+    (should (ardentia-model-allowed-values "AI_MODEL_WORKER"))
+    (should-not (ardentia-model-allowed-values "AI_MODEL_LEAD"))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt coll &rest _) (setq offered coll) "planner")))
+      (should (equal (ardentia-model-read-role) "AI_MODEL_PLANNER")))
+    (should (equal offered ardentia-model-roles))
+    (let ((ardentia-model-property "AI_MODEL_X"))
+      (should (equal (ardentia-model-default-property) "AI_MODEL_X")))
+    (let ((ardentia-model-roles nil))
+      (should-error (ardentia-model-read-role) :type 'user-error))))
 
 ;;;; Reload
 

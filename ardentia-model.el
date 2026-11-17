@@ -25,9 +25,9 @@
 
 ;;; Commentary:
 
-;; The properties AI_MODEL_<ROLE> on a task set the model of that agent role
-;; (orchestrator, planner, researcher, worker, qa); the orchestrator's one is
-;; the model the runner starts the task's orchestrator with.  This file offers
+;; The properties AI_MODEL_<ROLE> on a task set the model of that agent role;
+;; the roles are `ardentia-model-roles' (default: lead, qa), and the first
+;; role's one is the model the runner starts the task with.  This file offers
 ;; the models that are available right now: the aliases in
 ;; `ardentia-model-aliases' plus the model IDs the models endpoint
 ;; returns for the OAuth login of `ardentia-usage-credentials-file'.  The
@@ -48,16 +48,19 @@
 (require 'ardentia-actions)
 (require 'ardentia-usage)
 
-(defcustom ardentia-model-property "AI_MODEL_ORCHESTRATOR"
-  "Property that names the model of an agent task."
-  :type 'string
+(defcustom ardentia-model-roles '("lead" "qa")
+  "Agent roles whose model a task can name, the first one the default.
+Role ROLE is the property AI_MODEL_ROLE, upcased.  `ardentia-set-model'
+offers these roles; set the list to the roles of your agent team, e.g.
+\='(\"orchestrator\" \"planner\" \"researcher\" \"worker\" \"qa\")
+for a team that is led by an orchestrator."
+  :type '(repeat string)
   :group 'ardentia)
 
-(defcustom ardentia-model-roles
-  '("orchestrator" "planner" "researcher" "worker" "qa")
-  "Agent roles whose model a task can name.
-Role ROLE is the property AI_MODEL_ROLE, upcased."
-  :type '(repeat string)
+(defcustom ardentia-model-property nil
+  "Property that names the model of an agent task when no role is given.
+nil means the property of the first role in `ardentia-model-roles'."
+  :type '(choice (const :tag "Property of the first role" nil) string)
   :group 'ardentia)
 
 (defcustom ardentia-model-aliases '("haiku" "sonnet" "opus" "fable")
@@ -154,16 +157,26 @@ list.  Return the chosen string, or nil for none."
   "Return the property name that holds the model of ROLE."
   (concat "AI_MODEL_" (upcase role)))
 
+(defun ardentia-model-default-property ()
+  "Return the property used when no role is given.
+That is `ardentia-model-property', or else the first role's property."
+  (or ardentia-model-property
+      (and ardentia-model-roles
+           (ardentia-model-role-property (car ardentia-model-roles)))
+      (user-error "No role in `ardentia-model-roles'")))
+
 (defun ardentia-model-read-role ()
   "Read an agent role with completion; return its model property name."
+  (unless ardentia-model-roles
+    (user-error "No role in `ardentia-model-roles'"))
   (ardentia-model-role-property
    (completing-read "Role: " ardentia-model-roles nil t nil nil
                     (car ardentia-model-roles))))
 
 (defun ardentia-model--apply (model &optional property)
   "Set PROPERTY of the heading at point to MODEL; nil removes it.
-PROPERTY defaults to `ardentia-model-property'."
-  (let ((property (or property ardentia-model-property)))
+PROPERTY defaults to `ardentia-model-default-property'."
+  (let ((property (or property (ardentia-model-default-property))))
     (if model
         (org-entry-put nil property model)
       (org-entry-delete nil property))))
@@ -183,13 +196,13 @@ With a prefix argument FORCE refetch the model list."
 
 (defun ardentia-set-model-1 (task model &optional property)
   "Set PROPERTY of TASK (a task plist) to MODEL; nil removes it.
-PROPERTY defaults to `ardentia-model-property'."
+PROPERTY defaults to `ardentia-model-default-property'."
   (ardentia--call-on-task task (lambda () (ardentia-model--apply model property))))
 
 (defun ardentia-model-allowed-values (property)
   "Offer the models when PROPERTY is the model property.
 For `org-property-allowed-value-functions'."
-  (when (member property (cons ardentia-model-property
+  (when (member property (cons (ignore-errors (ardentia-model-default-property))
                                (mapcar #'ardentia-model-role-property
                                        ardentia-model-roles)))
     ;; ":ETC" lets org accept a model ID that is not in the list.
